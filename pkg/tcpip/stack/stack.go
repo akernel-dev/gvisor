@@ -133,8 +133,11 @@ type Stack struct {
 	handleLocal bool
 
 	// tables are the iptables packet filtering and manipulation rules.
-	// TODO(gvisor.dev/issue/4595): S/R this field.
-	tables *IPTables `state:"nosave"`
+	// They are part of the checkpoint: runtime-programmed rules (e.g. a
+	// nested docker daemon's DOCKER chains) survive restore. On restore,
+	// the boot network setup only installs defaults when this field is
+	// nil (checkpoints from older binaries).
+	tables *IPTables
 
 	// nftables is the nftables interface for packet filtering and manipulation rules.
 	// Using atomic.Pointer for RCU lock-free reads.
@@ -1239,13 +1242,6 @@ type NICInfo struct {
 
 	// Kind specifies the link kind of the NIC (e.g. "veth", "bridge").
 	Kind string
-
-	// Checkpointable marks NICs whose entire state (link endpoint included)
-	// is pure in-memory and can be serialized into a checkpoint, surviving
-	// restore. Boot NICs backed by host file descriptors must NOT set this:
-	// their endpoints cannot be serialized and they are re-created from the
-	// network configuration during restore instead.
-	Checkpointable bool
 }
 
 // HasNIC returns true if the NICID is defined in the stack.
@@ -2177,11 +2173,11 @@ func (s *Stack) ReplaceConfig(st *Stack) {
 // Restore restarts the stack after a restore. This must be called after the
 // entire system has been restored.
 func (s *Stack) Restore() {
-	// Stacks that were saved while tables were not part of the checkpoint
-	// (see gvisor.dev/issue/4595) restore with nil tables; the boot network
-	// setup installs defaults for the root stack, but stacks kept from the
-	// checkpoint (inner network namespaces) need them here or the packet
-	// path dereferences nil on the first forwarded packet.
+	// Stacks saved before tables became part of the checkpoint restore
+	// with nil tables; the boot network setup installs defaults for the
+	// root stack, but stacks kept from the checkpoint (inner network
+	// namespaces) need them here or the packet path dereferences nil on
+	// the first forwarded packet.
 	if s.tables == nil {
 		s.tables = DefaultTables(s.clock, rand.New(rand.NewSource(time.Now().UnixNano())))
 	}
@@ -2256,6 +2252,15 @@ func (s *Stack) Restore() {
 	// Now restore any protocol level background workers.
 	for _, p := range s.transportProtocols {
 		p.proto.Restore()
+	}
+
+	// Restart the iptables connection reaper. Stack.Restore() runs after
+	// the kernel restore wired up a working clock, so the reaper can
+	// safely schedule itself (see IPTables.restoreReaper). Tables are nil
+	// only for stacks created before this field became savable; the boot
+	// network setup installs defaults for those before Restore() runs.
+	if s.tables != nil {
+		s.tables.restoreReaper()
 	}
 }
 

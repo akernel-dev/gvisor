@@ -15,6 +15,7 @@
 package stack
 
 import (
+	goContext "context"
 	"fmt"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -41,12 +42,10 @@ type AddressableEndpointState struct {
 	// AddressableEndpointState.mu
 	//   addressState.mu
 	mu addressableEndpointStateRWMutex `state:"nosave"`
-	// TODO(b/361075310): Enable s/r for the below fields.
-	//
 	// +checklocks:mu
-	endpoints map[tcpip.Address]*addressState `state:"nosave"`
+	endpoints map[tcpip.Address]*addressState
 	// +checklocks:mu
-	primary []*addressState `state:"nosave"`
+	primary []*addressState
 }
 
 // AddressableEndpointStateOptions contains options used to configure an
@@ -738,6 +737,8 @@ func (a *AddressableEndpointState) Cleanup() {
 var _ AddressEndpoint = (*addressState)(nil)
 
 // addressState holds state for an address.
+//
+// +stateify savable
 type addressState struct {
 	addressableEndpointState *AddressableEndpointState
 	addr                     tcpip.AddressWithPrefix
@@ -748,8 +749,8 @@ type addressState struct {
 	//
 	// AddressableEndpointState.mu
 	//   addressState.mu
-	mu   addressStateRWMutex
-	refs addressStateRefs
+	mu   addressStateRWMutex `state:"nosave"`
+	refs addressStateRefs    `state:"nosave"`
 	// checklocks:mu
 	kind AddressKind
 	// checklocks:mu
@@ -766,7 +767,15 @@ type addressState struct {
 	// dispatcher.
 	//
 	// checklocks:mu
-	disp AddressDispatcher
+	disp AddressDispatcher `state:"nosave"`
+}
+
+// afterLoad is invoked by stateify.
+func (a *addressState) afterLoad(goContext.Context) {
+	// The reference count is not savable: the enclosing endpoints map owns
+	// exactly one reference to every restored address, so reinitialize the
+	// count to 1.
+	a.refs.InitRefs()
 }
 
 // AddressWithPrefix implements AddressEndpoint.

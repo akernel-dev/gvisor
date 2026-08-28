@@ -15,9 +15,8 @@
 package inet
 
 import (
-	"sync"
-
 	goContext "context"
+	"sync"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
@@ -113,25 +112,18 @@ func NewNamespace(root *Namespace, userNS *auth.UserNamespace) *Namespace {
 	return n
 }
 
-// Children returns the non-root network namespaces derived from n (root
-// only). n.LockChildren must be held; the caller must not hold the
-// returned namespaces without a reference.
-//
-// +checklocks:n.childrenMu
-func (n *Namespace) Children() map[*Namespace]struct{} {
-	return n.children
-}
-
-// LockChildren locks the children registry for iteration.
-func (n *Namespace) LockChildren() {
+// ChildrenSnapshot returns a snapshot of the non-root network namespaces
+// derived from n (root only). The caller must not hold the returned
+// namespaces without a reference; callers that need to keep one must
+// IncRef it.
+func (n *Namespace) ChildrenSnapshot() []*Namespace {
 	n.childrenMu.Lock()
-}
-
-// UnlockChildren unlocks the children registry.
-//
-// +checklocks:n.childrenMu
-func (n *Namespace) UnlockChildren() {
-	n.childrenMu.Unlock()
+	defer n.childrenMu.Unlock()
+	out := make([]*Namespace, 0, len(n.children))
+	for ns := range n.children {
+		out = append(out, ns)
+	}
+	return out
 }
 
 // registerChild adds ns to the root namespace's children registry.
@@ -237,13 +229,14 @@ func (n *Namespace) afterLoad(goContext.Context) {
 		return
 	}
 	if n.stack != nil {
-		// The stack was restored from the checkpoint: bring it back to
-		// working order instead of replacing it with a fresh one. The
-		// previous behavior (unconditionally re-creating the stack) dropped
-		// every runtime-created interface (bridges, veth pairs) and socket
-		// in non-root network namespaces — e.g. all of docker's inner
-		// container networking in a DinD sandbox.
-		n.stack.Restore()
+		// The stack was restored from the checkpoint: keep it instead of
+		// replacing it with a fresh one (the previous behavior dropped
+		// every runtime-created interface — bridges, veth pairs — and
+		// socket in non-root network namespaces, e.g. all of docker's
+		// inner container networking in a DinD sandbox). Bringing the
+		// stack back to working order (Restore) is deferred to the kernel
+		// restore path: it must run after the clocks are wired up, and
+		// afterLoad executes during state decode.
 		return
 	}
 	n.init()

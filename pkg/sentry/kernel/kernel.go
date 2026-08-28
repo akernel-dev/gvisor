@@ -825,14 +825,12 @@ func (k *Kernel) SaveTo(ctx context.Context, stateFile, pagesMetadata io.WriteCl
 			// created by a nested docker daemon) carry their own network
 			// stacks, which are part of the saved state: quiesce them too
 			// so the snapshot is not torn by protocol background workers.
-			rootNS.LockChildren()
-			for ns := range rootNS.Children() {
+			for _, ns := range rootNS.ChildrenSnapshot() {
 				if stk := ns.Stack(); stk != nil {
 					stk.Pause()
 					defer stk.Resume()
 				}
 			}
-			rootNS.UnlockChildren()
 			log.Infof("Pausing network namespaces took [%s].", time.Since(netstackPauseStart))
 		}
 
@@ -1072,6 +1070,18 @@ func (k *Kernel) LoadFrom(ctx context.Context, r io.Reader, asyncMFLoader *Async
 		}
 		s.Restore()
 		timeline.Reached("Network stack restored")
+	}
+
+	// Non-root network namespaces restored from the checkpoint keep their
+	// saved stacks (see inet.Namespace.afterLoad); bring those stacks back
+	// to working order now that the clocks are running and the root stack
+	// has been reconfigured.
+	if rootNS := k.rootNetworkNamespace; rootNS != nil {
+		for _, ns := range rootNS.ChildrenSnapshot() {
+			if stk := ns.Stack(); stk != nil {
+				stk.Restore()
+			}
+		}
 	}
 
 	if FSRestoreFromContext(ctx) {

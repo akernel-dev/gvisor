@@ -110,6 +110,7 @@ type Stack struct {
 	// re-applied in Restore().
 	checkpointableRoutes   []tcpip.Route
 	checkpointableNicIDGen int32
+
 	// +checklocks:mu
 	loopbackNIC *nic `state:"nosave"`
 	// +checklocks:mu
@@ -2176,6 +2177,15 @@ func (s *Stack) ReplaceConfig(st *Stack) {
 // Restore restarts the stack after a restore. This must be called after the
 // entire system has been restored.
 func (s *Stack) Restore() {
+	// Stacks that were saved while tables were not part of the checkpoint
+	// (see gvisor.dev/issue/4595) restore with nil tables; the boot network
+	// setup installs defaults for the root stack, but stacks kept from the
+	// checkpoint (inner network namespaces) need them here or the packet
+	// path dereferences nil on the first forwarded packet.
+	if s.tables == nil {
+		s.tables = DefaultTables(s.clock, rand.New(rand.NewSource(time.Now().UnixNano())))
+	}
+
 	// Re-insert the checkpointable NICs (veth pairs, bridges, loopbacks)
 	// saved in the checkpoint. On the root stack, ResetConfig() emptied the
 	// nics map and ConfigureNetwork() re-created the boot NICs; on stacks
@@ -2211,15 +2221,20 @@ func (s *Stack) Restore() {
 	s.mu.Unlock()
 
 	// Re-apply routes that the restored configuration did not already
-	// install (boot routes are re-created identically by
-	// ConfigureNetwork; runtime routes — e.g. docker's bridge subnets —
-	// come from the snapshot).
-	current := make(map[tcpip.Route]struct{}, len(routes))
-	for _, r := range s.GetRouteTable() {
-		current[r] = struct{}{}
-	}
+	// install (boot routes are re-created by ConfigureNetwork; runtime
+	// routes — e.g. docker's bridge subnets — come from the snapshot).
+	// Route.Equal ignores fields the boot configuration may compute
+	// differently (e.g. MTU hints), so compare with it rather than ==.
+	current := s.GetRouteTable()
 	for _, r := range routes {
-		if _, ok := current[r]; !ok {
+		found := false
+		for _, c := range current {
+			if r.Equal(c) {
+				found = true
+				break
+			}
+		}
+		if !found {
 			s.AddRoute(r)
 		}
 	}

@@ -122,6 +122,12 @@ func NewPair(mtu, backlogQueueSize uint32) (*Endpoint, *Endpoint) {
 
 // afterLoad is invoked by stateify.
 func (v *veth) afterLoad(goContext.Context) {
+	if v.closed {
+		// The pair was closed before the checkpoint; nothing will ever be
+		// written, so skip recreating the queue and the pump goroutine
+		// (it would block forever on a channel nobody closes).
+		return
+	}
 	if v.backlogSize == 0 {
 		v.backlogSize = DefaultBacklogSize
 	}

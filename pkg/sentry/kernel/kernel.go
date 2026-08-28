@@ -821,7 +821,19 @@ func (k *Kernel) SaveTo(ctx context.Context, stateFile, pagesMetadata io.WriteCl
 			log.Infof("Pausing root network namespace")
 			k.rootNetworkNamespace.Stack().Pause()
 			defer k.rootNetworkNamespace.Stack().Resume()
-			log.Infof("Pausing root network namespace took [%s].", time.Since(netstackPauseStart))
+			// Non-root network namespaces (e.g. inner container namespaces
+			// created by a nested docker daemon) carry their own network
+			// stacks, which are part of the saved state: quiesce them too
+			// so the snapshot is not torn by protocol background workers.
+			rootNS.LockChildren()
+			for ns := range rootNS.Children() {
+				if stk := ns.Stack(); stk != nil {
+					stk.Pause()
+					defer stk.Resume()
+				}
+			}
+			rootNS.UnlockChildren()
+			log.Infof("Pausing network namespaces took [%s].", time.Since(netstackPauseStart))
 		}
 
 		// Save the kernel state.

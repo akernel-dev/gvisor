@@ -16,6 +16,8 @@
 package veth
 
 import (
+	goContext "context"
+
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
@@ -32,8 +34,11 @@ type veth struct {
 	mu           vethRWMutex `state:"nosave"`
 	closed       bool
 	backlogQueue chan vethPacket `state:"nosave"`
-	mtu          uint32
-	endpoints    [2]Endpoint
+	// backlogSize records the capacity used to create backlogQueue so
+	// afterLoad() can recreate the channel (channels are not savable).
+	backlogSize uint32
+	mtu         uint32
+	endpoints   [2]Endpoint
 }
 
 func (v *veth) close() {
@@ -88,6 +93,7 @@ type Endpoint struct {
 func NewPair(mtu, backlogQueueSize uint32) (*Endpoint, *Endpoint) {
 	veth := veth{
 		backlogQueue: make(chan vethPacket, backlogQueueSize),
+		backlogSize:  backlogQueueSize,
 		mtu:          mtu,
 		endpoints: [2]Endpoint{
 			{
@@ -112,6 +118,20 @@ func NewPair(mtu, backlogQueueSize uint32) (*Endpoint, *Endpoint) {
 
 	}()
 	return a, b
+}
+
+// afterLoad is invoked by stateify.
+func (v *veth) afterLoad(goContext.Context) {
+	if v.backlogSize == 0 {
+		v.backlogSize = DefaultBacklogSize
+	}
+	v.backlogQueue = make(chan vethPacket, v.backlogSize)
+	go func() {
+		for t := range v.backlogQueue {
+			t.e.InjectInbound(t.protocol, t.pkt)
+			t.pkt.DecRef()
+		}
+	}()
 }
 
 // Close closes e. Further packet injections will return an error, and all pending

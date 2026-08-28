@@ -1991,6 +1991,9 @@ func (c *sandboxNetstackCreator) CreateStack() (inet.Stack, error) {
 	opts := stack.NICOptions{
 		Name:               link.Name,
 		DeliverLinkPackets: true,
+		// Pure in-memory loopback: checkpoint it so inner network
+		// namespaces restored from a checkpoint keep their loopback.
+		Checkpointable: true,
 	}
 
 	if err := n.createNICWithAddrs(nicID, linkEP, opts, link.Addresses); err != nil {

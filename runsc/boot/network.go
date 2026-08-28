@@ -323,6 +323,12 @@ func (n *Network) CreateLinksAndRoutes(args *CreateLinksAndRoutesArgs, _ *struct
 		opts := stack.NICOptions{
 			Name:               link.Name,
 			DeliverLinkPackets: true,
+			// The loopback endpoint is pure in-memory state: let it be
+			// checkpointed so it survives restore on stacks that are not
+			// re-created from the network configuration (inner network
+			// namespaces). On the root stack the boot loopback is
+			// re-created first and the saved copy is skipped.
+			Checkpointable: true,
 		}
 		if err := n.createNICWithAddrs(nicID, linkEP, opts, link.Addresses); err != nil {
 			return err

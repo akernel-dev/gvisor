@@ -15,6 +15,7 @@
 package stack
 
 import (
+	goContext "context"
 	"fmt"
 	"reflect"
 	"sort"
@@ -232,6 +233,15 @@ func (n *nic) getNetworkEndpoint(proto tcpip.NetworkProtocolNumber) NetworkEndpo
 // Enabled implements NetworkInterface.
 func (n *nic) Enabled() bool {
 	return n.enabled.Load()
+}
+
+// afterLoad is invoked by stateify.
+func (n *nic) afterLoad(goContext.Context) {
+	// The pending-link-resolution queue's maps are not savable (they key
+	// on live channels); reinitialize them like newNIC does. Packets that
+	// were still awaiting resolution at checkpoint time are lost, matching
+	// the pre-checkpoint behavior of other in-flight packet state.
+	n.linkResQueue.init(n)
 }
 
 // setEnabled sets the enabled status for the NIC.

@@ -15,6 +15,7 @@
 package stack
 
 import (
+	goContext "context"
 	"math"
 	"math/rand"
 	"sync"
@@ -345,6 +346,13 @@ type NUDState struct {
 
 // NewNUDState returns new NUDState using c as configuration and the specified
 // random number generator for use in recomputing ReachableTime.
+// afterLoad is invoked by stateify.
+func (s *NUDState) afterLoad(goContext.Context) {
+	// The RNG is not savable; neighbor reachability timers only need any
+	// per-state source of jitter, so a private instance is equivalent.
+	s.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+}
+
 func NewNUDState(c NUDConfigurations, clock tcpip.Clock, rng *rand.Rand) *NUDState {
 	s := &NUDState{
 		clock: clock,

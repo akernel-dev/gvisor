@@ -1119,6 +1119,15 @@ func (s *Stack) Restore() {
 	s.Stack.Restore()
 }
 
+// PrepareRestore implements inet.Stack.PrepareRestore.
+func (s *Stack) PrepareRestore() { s.Stack.PrepareRestore() }
+
+// RestoreEndpoints implements inet.Stack.RestoreEndpoints.
+func (s *Stack) RestoreEndpoints() { s.Stack.RestoreEndpoints() }
+
+// CompleteRestore implements inet.Stack.CompleteRestore.
+func (s *Stack) CompleteRestore() { s.Stack.CompleteRestore() }
+
 // ResetConfig implements inet.Stack.ResetConfig.
 func (s *Stack) ResetConfig() {
 	s.Stack.ResetConfig()

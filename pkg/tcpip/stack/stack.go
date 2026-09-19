@@ -2173,6 +2173,14 @@ func (s *Stack) ReplaceConfig(st *Stack) {
 // Restore restarts the stack after a restore. This must be called after the
 // entire system has been restored.
 func (s *Stack) Restore() {
+	s.PrepareRestore()
+	s.RestoreEndpoints()
+	s.CompleteRestore()
+}
+
+// PrepareRestore rebuilds topology before any stack restores endpoints.
+// Call this for every restored network namespace before RestoreEndpoints.
+func (s *Stack) PrepareRestore() {
 	// Stacks saved before tables became part of the checkpoint restore
 	// with nil tables; the boot network setup installs defaults for the
 	// root stack, but stacks kept from the checkpoint (inner network
@@ -2235,6 +2243,11 @@ func (s *Stack) Restore() {
 		}
 	}
 
+}
+
+// RestoreEndpoints starts endpoint restoration without waiting for global TCP
+// dependencies. Call this on all stacks before CompleteRestore on any stack.
+func (s *Stack) RestoreEndpoints() {
 	// RestoredEndpoint.Restore() may call other methods on s, so we can't hold
 	// s.mu while restoring the endpoints.
 	s.mu.Lock()
@@ -2244,7 +2257,11 @@ func (s *Stack) Restore() {
 	for _, e := range eps {
 		e.Restore(s)
 	}
+}
 
+// CompleteRestore waits for endpoints across all namespaces before restarting
+// protocol workers. All stacks must have run RestoreEndpoints first.
+func (s *Stack) CompleteRestore() {
 	// Make sure all the endpoints are loaded correctly before resuming the
 	// protocol level background workers.
 	tcpip.AsyncLoading.Wait()

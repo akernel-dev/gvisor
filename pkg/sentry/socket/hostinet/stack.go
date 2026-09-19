@@ -429,6 +429,15 @@ func (*Stack) Restore() {
 	restoreListeners()
 }
 
+// PrepareRestore implements inet.Stack.PrepareRestore.
+func (*Stack) PrepareRestore() {}
+
+// RestoreEndpoints implements inet.Stack.RestoreEndpoints.
+func (*Stack) RestoreEndpoints() {}
+
+// CompleteRestore implements inet.Stack.CompleteRestore.
+func (s *Stack) CompleteRestore() { s.Restore() }
+
 // ResetConfig implements inet.Stack.ResetConfig. It takes ownership of
 // the freshly configured stack's host state, including its proc net files.
 func (s *Stack) ResetConfig() {

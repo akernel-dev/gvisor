@@ -44,6 +44,51 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 )
 
+// crossStackRestoreEndpoint models TCP's global connected-before-listener
+// dependency when the connected endpoint belongs to a different namespace.
+type crossStackRestoreEndpoint struct {
+	connected chan struct{}
+	listener  bool
+}
+
+func (e *crossStackRestoreEndpoint) Restore(*stack.Stack) {
+	if !e.listener {
+		close(e.connected)
+		return
+	}
+	tcpip.AsyncLoading.Add(1)
+	go func() {
+		defer tcpip.AsyncLoading.Done()
+		<-e.connected
+	}()
+}
+
+func TestRestoreEndpointsAcrossNamespaces(t *testing.T) {
+	root := stack.New(stack.Options{})
+	child := stack.New(stack.Options{})
+	defer root.Destroy()
+	defer child.Destroy()
+	connected := make(chan struct{})
+	root.RegisterRestoredEndpoint(&crossStackRestoreEndpoint{connected: connected, listener: true})
+	child.RegisterRestoredEndpoint(&crossStackRestoreEndpoint{connected: connected})
+	for _, s := range []*stack.Stack{root, child} {
+		s.PrepareRestore()
+	}
+	root.RestoreEndpoints()
+	child.RestoreEndpoints()
+	done := make(chan struct{})
+	go func() {
+		root.CompleteRestore()
+		child.CompleteRestore()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cross-namespace endpoint restoration deadlocked")
+	}
+}
+
 const (
 	fakeNetNumber        tcpip.NetworkProtocolNumber = math.MaxUint32
 	fakeNetHeaderLen                                 = 12

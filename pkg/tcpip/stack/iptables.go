@@ -685,6 +685,21 @@ func (it *IPTables) beforeSave() {
 	it.connections.mu.Lock()
 }
 
+// resumeAfterSave resumes iptables background work and packet processing in
+// the source stack after a live checkpoint. beforeSave stops the reaper and
+// holds the conntrack lock while state is encoded; unlike a restored stack,
+// the source keeps using the same lock and must release it explicitly.
+func (it *IPTables) resumeAfterSave() {
+	it.connections.mu.Unlock()
+
+	it.mu.RLock()
+	modified := it.modified
+	it.mu.RUnlock()
+	if modified {
+		it.startReaper(reaperDelay)
+	}
+}
+
 // restoreReaper restarts the connection reaper after a restore. It must
 // only be called once the stack's clock is working: the reaper schedules
 // itself with clock.AfterFunc, and during state decode the clock may not

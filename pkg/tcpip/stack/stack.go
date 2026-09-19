@@ -2277,6 +2277,12 @@ func (s *Stack) Resume() {
 	for _, p := range s.transportProtocols {
 		p.proto.Resume()
 	}
+	// Resume conntrack packet processing and its reaper in a source stack
+	// that continues running after a live checkpoint. Restored stacks use
+	// restoreReaper instead because their locks are newly initialized.
+	if s.tables != nil {
+		s.tables.resumeAfterSave()
+	}
 }
 
 // RegisterPacketEndpoint registers ep with the stack, causing it to receive

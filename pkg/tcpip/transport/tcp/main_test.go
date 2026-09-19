@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"gvisor.dev/gvisor/pkg/refs"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 func TestMain(m *testing.M) {
@@ -26,4 +27,20 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	refs.DoLeakCheck()
 	os.Exit(code)
+}
+
+func TestRestoreSenderGSO(t *testing.T) {
+	for _, mode := range []stack.GSOType{stack.GSONone, stack.GSOGvisor, stack.GSOTCPv4, stack.GSOTCPv6} {
+		ep := &Endpoint{gso: stack.GSO{Type: mode}}
+		s := &sender{ep: ep, TCPSenderState: TCPSenderState{MaxPayloadSize: 1400}}
+		s.ep.mu.Lock()
+		s.restoreGSO()
+		s.ep.mu.Unlock()
+		if got, want := s.gso, mode != stack.GSONone; got != want {
+			t.Errorf("mode %v: sender GSO = %v, want %v", mode, got, want)
+		}
+		if mode != stack.GSONone && ep.gso.MSS != 1400 {
+			t.Errorf("mode %v: MSS = %d, want 1400", mode, ep.gso.MSS)
+		}
+	}
 }

@@ -2497,6 +2497,9 @@ func (e *Endpoint) connect(addr tcpip.FullAddress, handshake bool) tcpip.Error {
 	// Connect in the restore phase does not perform handshake. Restore its
 	// connection setting here.
 	if !handshake {
+		// initGSO may reset MSS. The saved sender retains the negotiated size,
+		// but updateMaxPayloadSize does nothing unless the route MTU decreases.
+		e.snd.restoreGSO()
 		e.segmentQueue.mu.Lock()
 		for _, l := range []segmentList{e.segmentQueue.list, e.snd.writeList.writeList} {
 			for s := l.Front(); s != nil; s = s.Next() {
@@ -3237,6 +3240,7 @@ func (e *Endpoint) initHostGSO() {
 }
 
 func (e *Endpoint) initGSO() {
+	e.gso = stack.GSO{}
 	if e.route.HasHostGSOCapability() {
 		e.initHostGSO()
 	} else if e.route.HasGVisorGSOCapability() {

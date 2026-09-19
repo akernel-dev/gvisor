@@ -30,10 +30,77 @@ import (
 // and/or IP for packets.
 const SNATTargetName = "SNAT"
 
+// MasqueradeTargetName is used to mark targets that dynamically select the
+// source address of the outgoing interface.
+const MasqueradeTargetName = "MASQUERADE"
+
 // +stateify savable
 type snatTarget struct {
 	stack.SNATTarget
 	revision uint8
+}
+
+// +stateify savable
+type masqueradeTarget struct {
+	stack.MasqueradeTarget
+}
+
+func (mt *masqueradeTarget) id() targetID {
+	return targetID{
+		name:            MasqueradeTargetName,
+		networkProtocol: mt.NetworkProtocol,
+	}
+}
+
+type masqueradeTargetMakerV4 struct {
+	NetworkProtocol tcpip.NetworkProtocolNumber
+}
+
+func (mt *masqueradeTargetMakerV4) id() targetID {
+	return targetID{
+		name:            MasqueradeTargetName,
+		networkProtocol: mt.NetworkProtocol,
+	}
+}
+
+func (*masqueradeTargetMakerV4) marshal(target target) []byte {
+	_ = target.(*masqueradeTarget)
+	mt := linux.XTNATTargetV0{
+		Target: linux.XTEntryTarget{
+			TargetSize: linux.SizeOfXTNATTargetV0,
+		},
+		NfRange: linux.NfNATIPV4MultiRangeCompat{
+			RangeSize: 1,
+		},
+	}
+	copy(mt.Target.Name[:], MasqueradeTargetName)
+	return marshal.Marshal(&mt)
+}
+
+func (mt *masqueradeTargetMakerV4) unmarshal(buf []byte, filter stack.IPHeaderFilter) (target, *syserr.Error) {
+	if len(buf) < linux.SizeOfXTNATTargetV0 {
+		nflog("masqueradeTargetMakerV4: buf has insufficient size for MASQUERADE target %d", len(buf))
+		return nil, syserr.ErrInvalidArgument
+	}
+	if p := filter.Protocol; p != header.TCPProtocolNumber && p != header.UDPProtocolNumber {
+		nflog("masqueradeTargetMakerV4: bad proto %d", p)
+		return nil, syserr.ErrInvalidArgument
+	}
+
+	var encoded linux.XTNATTargetV0
+	encoded.UnmarshalUnsafe(buf)
+	if encoded.NfRange.RangeSize != 1 {
+		nflog("masqueradeTargetMakerV4: bad rangesize %d", encoded.NfRange.RangeSize)
+		return nil, syserr.ErrInvalidArgument
+	}
+	if encoded.NfRange.RangeIPV4.Flags != 0 {
+		nflog("masqueradeTargetMakerV4: unsupported flags %x", encoded.NfRange.RangeIPV4.Flags)
+		return nil, syserr.ErrInvalidArgument
+	}
+
+	return &masqueradeTarget{MasqueradeTarget: stack.MasqueradeTarget{
+		NetworkProtocol: mt.NetworkProtocol,
+	}}, nil
 }
 
 func (st *snatTarget) id() targetID {

@@ -272,6 +272,20 @@ func (n *neighborCache) setConfig(config NUDConfigurations) {
 	n.state.SetConfig(config)
 }
 
+// restore recreates the unsaved state-machine timer for each saved entry.
+func (n *neighborCache) restore() {
+	n.mu.RLock()
+	entries := make([]*neighborEntry, 0, len(n.mu.cache))
+	for _, entry := range n.mu.cache {
+		entries = append(entries, entry)
+	}
+	n.mu.RUnlock()
+
+	for _, entry := range entries {
+		entry.restore()
+	}
+}
+
 // handleProbe handles a neighbor probe as defined by RFC 4861 section 7.2.3.
 //
 // Validation of the probe is expected to be handled by the caller.

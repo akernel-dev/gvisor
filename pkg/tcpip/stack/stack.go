@@ -2249,6 +2249,19 @@ func (s *Stack) Restore() {
 	// protocol level background workers.
 	tcpip.AsyncLoading.Wait()
 
+	// Neighbor state-machine timers are backed by live clock callbacks and are
+	// intentionally not serialized. Recreate them only after the restored
+	// endpoints and stack clock are ready.
+	s.mu.RLock()
+	nics := make([]*nic, 0, len(s.nics))
+	for _, nic := range s.nics {
+		nics = append(nics, nic)
+	}
+	s.mu.RUnlock()
+	for _, nic := range nics {
+		nic.restoreNeighborCaches()
+	}
+
 	// Now restore any protocol level background workers.
 	for _, p := range s.transportProtocols {
 		p.proto.Restore()

@@ -244,6 +244,14 @@ func (n *nic) afterLoad(goContext.Context) {
 	n.linkResQueue.init(n)
 }
 
+// restoreNeighborCaches recreates unsaved NUD timers after the stack clock is
+// ready.
+func (n *nic) restoreNeighborCaches() {
+	for _, resolver := range n.linkAddrResolvers {
+		resolver.neigh.restore()
+	}
+}
+
 // setEnabled sets the enabled status for the NIC.
 //
 // Returns true if the enabled status was updated.

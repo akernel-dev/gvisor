@@ -887,6 +887,34 @@ func TestEntryReachableToStaleWhenTimeout(t *testing.T) {
 	}
 }
 
+func TestEntryRestoresReachableTimer(t *testing.T) {
+	c := DefaultNUDConfigurations()
+	c.MinRandomFactor = 1
+	c.MaxRandomFactor = 1
+
+	e, nudDisp, linkRes, clock := entryTestSetup(c)
+	if err := unknownToIncomplete(e, nudDisp, linkRes, clock); err != nil {
+		t.Fatalf("unknownToIncomplete(...) = %s", err)
+	}
+	if err := incompleteToReachable(e, nudDisp, linkRes, clock); err != nil {
+		t.Fatalf("incompleteToReachable(...) = %s", err)
+	}
+
+	// State decoding restores the logical timer state but not the live clock
+	// callback. Model that boundary and verify restore makes both timer reset
+	// and expiry safe again.
+	e.mu.Lock()
+	e.mu.timer.timer.Stop()
+	e.mu.timer.timer = nil
+	e.mu.Unlock()
+	e.restore()
+	e.handleUpperLevelConfirmation()
+
+	if err := reachableToStale(c, e, nudDisp, linkRes, clock); err != nil {
+		t.Fatalf("reachableToStale(...) after restore = %s", err)
+	}
+}
+
 // reachableToStale transitions a neighborEntry in Reachable state to Stale
 // state. Depends on the elimination of random factors in the ReachableTime
 // computation.

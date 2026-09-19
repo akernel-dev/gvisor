@@ -96,6 +96,21 @@ type Stack struct {
 	mu stackRWMutex `state:"nosave"`
 	// +checklocks:mu
 	nics map[tcpip.NICID]*nic `state:"nosave"`
+
+	// checkpointableNICs tracks NICs created with NICOptions.Checkpointable
+	// (veth pairs, bridges, loopbacks): everything needed to serialize them
+	// is in-memory, so they are saved in the checkpoint and re-inserted by
+	// Restore(). The live nics map above is not serialized.
+	//
+	// +checklocks:mu
+	checkpointableNICs map[tcpip.NICID]*nic
+
+	// checkpointableRoutes and checkpointableNicIDGen are snapshots of the
+	// nosave route table and NIC ID generator, taken in beforeSave() and
+	// re-applied in Restore().
+	checkpointableRoutes   []tcpip.Route
+	checkpointableNicIDGen int32
+
 	// +checklocks:mu
 	loopbackNIC *nic `state:"nosave"`
 	// +checklocks:mu
@@ -118,8 +133,11 @@ type Stack struct {
 	handleLocal bool
 
 	// tables are the iptables packet filtering and manipulation rules.
-	// TODO(gvisor.dev/issue/4595): S/R this field.
-	tables *IPTables `state:"nosave"`
+	// They are part of the checkpoint: runtime-programmed rules (e.g. a
+	// nested docker daemon's DOCKER chains) survive restore. On restore,
+	// the boot network setup only installs defaults when this field is
+	// nil (checkpoints from older binaries).
+	tables *IPTables
 
 	// nftables is the nftables interface for packet filtering and manipulation rules.
 	// Using atomic.Pointer for RCU lock-free reads.
@@ -924,6 +942,13 @@ type NICOptions struct {
 
 	// Kind specifies the link kind of the NIC (e.g. "veth", "bridge").
 	Kind string
+
+	// Checkpointable marks NICs whose entire state (link endpoint included)
+	// is pure in-memory and can be serialized into a checkpoint, surviving
+	// restore. Boot NICs backed by host file descriptors must NOT set this:
+	// their endpoints cannot be serialized and they are re-created from the
+	// network configuration during restore instead.
+	Checkpointable bool
 }
 
 // GetNICByID return a network device associated with the specified ID.
@@ -971,6 +996,12 @@ func (s *Stack) CreateNICWithOptions(id tcpip.NICID, ep LinkEndpoint, opts NICOp
 		}
 	}
 	s.nics[id] = n
+	if opts.Checkpointable {
+		if s.checkpointableNICs == nil {
+			s.checkpointableNICs = make(map[tcpip.NICID]*nic)
+		}
+		s.checkpointableNICs[id] = n
+	}
 	if n.IsLoopback() {
 		s.loopbackNIC = n
 	}
@@ -1067,6 +1098,7 @@ func (s *Stack) removeNICLocked(id tcpip.NICID, closeLinkEndpoint bool) (func(),
 		return nil, &tcpip.ErrUnknownNICID{}
 	}
 	delete(s.nics, id)
+	delete(s.checkpointableNICs, id)
 
 	if nic.Primary != nil {
 		b := nic.Primary.NetworkLinkEndpoint.(CoordinatorNIC)
@@ -2141,6 +2173,81 @@ func (s *Stack) ReplaceConfig(st *Stack) {
 // Restore restarts the stack after a restore. This must be called after the
 // entire system has been restored.
 func (s *Stack) Restore() {
+	s.PrepareRestore()
+	s.RestoreEndpoints()
+	s.CompleteRestore()
+}
+
+// PrepareRestore rebuilds topology before any stack restores endpoints.
+// Call this for every restored network namespace before RestoreEndpoints.
+func (s *Stack) PrepareRestore() {
+	// Stacks saved before tables became part of the checkpoint restore
+	// with nil tables; the boot network setup installs defaults for the
+	// root stack, but stacks kept from the checkpoint (inner network
+	// namespaces) need them here or the packet path dereferences nil on
+	// the first forwarded packet.
+	if s.tables == nil {
+		s.tables = DefaultTables(s.clock, rand.New(rand.NewSource(time.Now().UnixNano())))
+	}
+
+	// Re-insert the checkpointable NICs (veth pairs, bridges, loopbacks)
+	// saved in the checkpoint. On the root stack, ResetConfig() emptied the
+	// nics map and ConfigureNetwork() re-created the boot NICs; on stacks
+	// restored directly the map is nil. Either way the saved NICs slot back
+	// in under their original IDs (boot NICs created first keep their IDs;
+	// collisions are skipped).
+	s.mu.Lock()
+	if n := len(s.checkpointableNICs); n > 0 {
+		if s.nics == nil {
+			s.nics = make(map[tcpip.NICID]*nic, n)
+		}
+		for id, nic := range s.checkpointableNICs {
+			if _, exists := s.nics[id]; exists {
+				// A NIC with this ID was already re-created from the boot
+				// network configuration (e.g. the root loopback); the saved
+				// runtime NIC IDs never collide with boot IDs because they
+				// were allocated after them.
+				continue
+			}
+			s.nics[id] = nic
+			if nic.IsLoopback() && s.loopbackNIC == nil {
+				s.loopbackNIC = nic
+			}
+		}
+	}
+	// Keep the ID generator ahead of every restored NIC ID so future
+	// allocations cannot collide.
+	if gen := s.nicIDGen.Load(); gen < s.checkpointableNicIDGen {
+		s.nicIDGen.Store(s.checkpointableNicIDGen)
+	}
+	routes := s.checkpointableRoutes
+	s.checkpointableRoutes = nil
+	s.mu.Unlock()
+
+	// Re-apply routes that the restored configuration did not already
+	// install (boot routes are re-created by ConfigureNetwork; runtime
+	// routes — e.g. docker's bridge subnets — come from the snapshot).
+	// Route.Equal ignores fields the boot configuration may compute
+	// differently (e.g. MTU hints), so compare with it rather than ==.
+	current := s.GetRouteTable()
+	for _, r := range routes {
+		found := false
+		for _, c := range current {
+			if r.Equal(c) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.AddRoute(r)
+		}
+	}
+
+}
+
+// RestoreEndpoints starts endpoint restoration without waiting for global TCP
+// dependencies. Call this on all stacks before CompleteRestore on any stack.
+func (s *Stack) RestoreEndpoints() {
 	// RestoredEndpoint.Restore() may call other methods on s, so we can't hold
 	// s.mu while restoring the endpoints.
 	s.mu.Lock()
@@ -2150,14 +2257,40 @@ func (s *Stack) Restore() {
 	for _, e := range eps {
 		e.Restore(s)
 	}
+}
 
+// CompleteRestore waits for endpoints across all namespaces before restarting
+// protocol workers. All stacks must have run RestoreEndpoints first.
+func (s *Stack) CompleteRestore() {
 	// Make sure all the endpoints are loaded correctly before resuming the
 	// protocol level background workers.
 	tcpip.AsyncLoading.Wait()
 
+	// Neighbor state-machine timers are backed by live clock callbacks and are
+	// intentionally not serialized. Recreate them only after the restored
+	// endpoints and stack clock are ready.
+	s.mu.RLock()
+	nics := make([]*nic, 0, len(s.nics))
+	for _, nic := range s.nics {
+		nics = append(nics, nic)
+	}
+	s.mu.RUnlock()
+	for _, nic := range nics {
+		nic.restoreNeighborCaches()
+	}
+
 	// Now restore any protocol level background workers.
 	for _, p := range s.transportProtocols {
 		p.proto.Restore()
+	}
+
+	// Restart the iptables connection reaper. Stack.Restore() runs after
+	// the kernel restore wired up a working clock, so the reaper can
+	// safely schedule itself (see IPTables.restoreReaper). Tables are nil
+	// only for stacks created before this field became savable; the boot
+	// network setup installs defaults for those before Restore() runs.
+	if s.tables != nil {
+		s.tables.restoreReaper()
 	}
 }
 
@@ -2173,6 +2306,12 @@ func (s *Stack) Resume() {
 	// Now resume any protocol level background workers.
 	for _, p := range s.transportProtocols {
 		p.proto.Resume()
+	}
+	// Resume conntrack packet processing and its reaper in a source stack
+	// that continues running after a live checkpoint. Restored stacks use
+	// restoreReaper instead because their locks are newly initialized.
+	if s.tables != nil {
+		s.tables.resumeAfterSave()
 	}
 }
 

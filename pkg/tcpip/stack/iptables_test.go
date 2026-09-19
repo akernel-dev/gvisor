@@ -17,6 +17,7 @@ package stack
 import (
 	"math/rand"
 	"testing"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/faketime"
@@ -427,6 +428,40 @@ func TestNATConflict(t *testing.T) {
 			// A packet from the original source should be NATed as normal.
 			test.checkIPTables(t, iptables, v6PacketBufferWithSrcAddr(srcAddr), true /* lastHookOK */)
 		})
+	}
+}
+
+func TestIPTablesResumeAfterLiveSave(t *testing.T) {
+	clock := faketime.NewManualClock()
+	iptables := DefaultTables(clock, rand.New(rand.NewSource(0)))
+	// Force a replacement so conntrack and its reaper are initialized, as
+	// they are once a nested Docker daemon programs an SNAT rule.
+	iptables.ForceReplaceTable(FilterID, iptables.GetTable(FilterID, false), false)
+	oldReaper := iptables.reaper
+
+	iptables.beforeSave()
+	stack := New(Options{Clock: clock, IPTables: iptables})
+	stack.Resume()
+	t.Cleanup(func() {
+		if iptables.reaper != nil {
+			iptables.reaper.Stop()
+		}
+	})
+
+	if iptables.reaper == nil || iptables.reaper == oldReaper {
+		t.Fatal("live-save resume did not restart the conntrack reaper")
+	}
+	acquired := make(chan struct{})
+	go func() {
+		iptables.connections.mu.RLock()
+		_ = len(iptables.connections.buckets)
+		iptables.connections.mu.RUnlock()
+		close(acquired)
+	}()
+	select {
+	case <-acquired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("live-save resume left the conntrack lock held")
 	}
 }
 

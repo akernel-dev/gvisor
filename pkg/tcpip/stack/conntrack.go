@@ -15,9 +15,11 @@
 package stack
 
 import (
+	goContext "context"
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -476,6 +478,42 @@ func (ct *ConnTrack) init() {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 	ct.buckets = make([]bucket, numBuckets)
+}
+
+// afterLoad is invoked by stateify.
+func (ct *ConnTrack) afterLoad(goContext.Context) {
+	// The RNG is not savable; reinitialize it. It is only used to generate
+	// transient conntrack IDs, so a private instance is equivalent to the
+	// stack-scoped one used before the checkpoint.
+	ct.rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+
+	// Redraw the hash seeds so they cannot be correlated across
+	// checkpoints, then rehash every tuple under the new seed: the bucket
+	// index is jenkins(seed, tupleID) % len(buckets), so restoring entries
+	// without rehashing would leave them unreachable by Lookup (see the
+	// TODO on seed referencing gvisor.dev/issue/4595).
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	if len(ct.buckets) == 0 {
+		return
+	}
+	ct.seed = ct.rng.Uint32()
+	ct.nftIDSeed = ct.rng.Uint32()
+	var tuples []*tuple
+	for i := range ct.buckets {
+		ct.buckets[i].mu.Lock()
+		for t := ct.buckets[i].tuples.Front(); t != nil; t = t.Next() {
+			tuples = append(tuples, t)
+		}
+		ct.buckets[i].tuples.Reset()
+		ct.buckets[i].mu.Unlock()
+	}
+	for _, t := range tuples {
+		b := &ct.buckets[tupleHash(t.tupleID, ct.seed)%uint32(len(ct.buckets))]
+		b.mu.Lock()
+		b.tuples.PushBack(t)
+		b.mu.Unlock()
+	}
 }
 
 // getConnAndUpdate attempts to get a connection or creates one if no

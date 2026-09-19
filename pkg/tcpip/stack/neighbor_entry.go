@@ -233,6 +233,33 @@ func (e *neighborEntry) cancelTimerLocked() {
 	}
 }
 
+// restore recreates state-machine timers that are intentionally excluded from
+// checkpoints. It must be called after the stack clock is ready.
+func (e *neighborEntry) restore() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// The saved done pointer belonged to the unsaved timer callback and cannot
+	// be reused after restore.
+	e.mu.timer = timer{}
+	switch state := e.mu.neigh.State; state {
+	case Reachable, Delay, Probe:
+		// Restart with a full state timeout. Exact timer progress is not part of
+		// the checkpoint, but the state machine must remain live.
+		e.setStateLocked(state)
+	case Incomplete:
+		// Pending resolution callbacks and packets are not checkpointed. Make
+		// the next lookup start a fresh resolution instead of leaving an entry
+		// permanently incomplete without a timer.
+		e.mu.neigh.State = Unknown
+		e.mu.neigh.UpdatedAt = e.cache.nic.stack.clock.NowMonotonic()
+	case Unknown, Stale, Static, Unreachable:
+		// These states do not own timers.
+	default:
+		panic(fmt.Sprintf("invalid restored neighbor state: %s", state))
+	}
+}
+
 // removeLocked prepares the entry for removal.
 //
 // Precondition: e.mu MUST be locked.

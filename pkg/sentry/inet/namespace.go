@@ -16,6 +16,7 @@ package inet
 
 import (
 	goContext "context"
+	"sync"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
@@ -42,6 +43,10 @@ type Namespace struct {
 	// isRoot indicates whether this is the root network namespace.
 	isRoot bool
 
+	// root points at the root namespace this namespace derives from (nil
+	// for the root itself), for the children registry bookkeeping above.
+	root *Namespace
+
 	userNS *auth.UserNamespace
 
 	// abstractSockets tracks abstract sockets that are in use.
@@ -49,6 +54,15 @@ type Namespace struct {
 
 	// netlinkMcastTable manages multicast group membership for netlink sockets.
 	netlinkMcastTable *McastTable
+
+	// children tracks non-root namespaces derived from the root namespace
+	// (root only), so checkpointing can quiesce every network stack in the
+	// sandbox rather than just the root one. It is savable so restored
+	// namespaces stay tracked across checkpoint/restore cycles.
+	//
+	// +checklocks:childrenMu
+	children   map[*Namespace]struct{}
+	childrenMu sync.Mutex `state:"nosave"`
 }
 
 // NewRootNamespace creates the root network namespace, with creator
@@ -59,6 +73,7 @@ func NewRootNamespace(stack Stack, creator NetworkStackCreator, userNS *auth.Use
 		stack:             stack,
 		creator:           creator,
 		isRoot:            true,
+		root:              nil,
 		userNS:            userNS,
 		netlinkMcastTable: NewNetlinkMcastTable(),
 	}
@@ -89,14 +104,56 @@ func NewNamespace(root *Namespace, userNS *auth.UserNamespace) *Namespace {
 	n := &Namespace{
 		creator:           root.creator,
 		userNS:            userNS,
+		root:              root,
 		netlinkMcastTable: NewNetlinkMcastTable(),
 	}
+	root.registerChild(n)
 	n.init()
 	return n
 }
 
+// ChildrenSnapshot returns a snapshot of the non-root network namespaces
+// derived from n (root only). The caller must not hold the returned
+// namespaces without a reference; callers that need to keep one must
+// IncRef it.
+func (n *Namespace) ChildrenSnapshot() []*Namespace {
+	n.childrenMu.Lock()
+	defer n.childrenMu.Unlock()
+	out := make([]*Namespace, 0, len(n.children))
+	for ns := range n.children {
+		out = append(out, ns)
+	}
+	return out
+}
+
+// registerChild adds ns to the root namespace's children registry.
+func (n *Namespace) registerChild(ns *Namespace) {
+	if !n.isRoot {
+		panic("registerChild called on a non-root namespace")
+	}
+	n.childrenMu.Lock()
+	defer n.childrenMu.Unlock()
+	if n.children == nil {
+		n.children = make(map[*Namespace]struct{})
+	}
+	n.children[ns] = struct{}{}
+}
+
+// unregisterChild removes ns from the root namespace's children registry.
+func (n *Namespace) unregisterChild(ns *Namespace) {
+	if !n.isRoot {
+		return
+	}
+	n.childrenMu.Lock()
+	defer n.childrenMu.Unlock()
+	delete(n.children, ns)
+}
+
 // Destroy implements nsfs.Namespace.Destroy.
 func (n *Namespace) Destroy(ctx context.Context) {
+	if root := n.root; root != nil && root != n {
+		root.unregisterChild(n)
+	}
 	if s := n.Stack(); s != nil {
 		s.Destroy()
 	}
@@ -166,6 +223,22 @@ func (n *Namespace) init() {
 
 // afterLoad is invoked by stateify.
 func (n *Namespace) afterLoad(goContext.Context) {
+	if n.isRoot {
+		// The root stack is wired up by the kernel restore path
+		// (ResetConfig + ConfigureNetwork + Restore).
+		return
+	}
+	if n.stack != nil {
+		// The stack was restored from the checkpoint: keep it instead of
+		// replacing it with a fresh one (the previous behavior dropped
+		// every runtime-created interface — bridges, veth pairs — and
+		// socket in non-root network namespaces, e.g. all of docker's
+		// inner container networking in a DinD sandbox). Bringing the
+		// stack back to working order (Restore) is deferred to the kernel
+		// restore path: it must run after the clocks are wired up, and
+		// afterLoad executes during state decode.
+		return
+	}
 	n.init()
 }
 

@@ -107,7 +107,8 @@ type SaveOpts struct {
 
 	// FilestoreSidecarFDIndex is the index into FilePayload.Files of the
 	// donated file that receives the filestores.json artifact manifest
-	// during the save window. Only meaningful with FilestoreSnapshot.
+	// during the save window. Zero means absent (FD 0 is the state file).
+	// A sidecar may be donated even when there are no filestore mounts.
 	FilestoreSidecarFDIndex int `json:"filestore_sidecar_fd_index,omitempty"`
 
 	// HavePagesFile indicates whether the pages file and its corresponding
@@ -204,11 +205,15 @@ func setSaveOptsForLocalCheckpointFiles(o *SaveOpts, saveOpts *state.SaveOpts) e
 	}
 	// In-window filestore snapshot destinations and the sidecar manifest file.
 	wantFiles += len(o.FilestoreSnapshot)
-	if len(o.FilestoreSnapshot) > 0 {
+	haveFilestoreSidecar := o.FilestoreSidecarFDIndex != 0 || len(o.FilestoreSnapshot) > 0
+	if haveFilestoreSidecar {
 		wantFiles++ // sidecar
 	}
 	if gotFiles := len(o.FilePayload.Files); gotFiles != wantFiles {
 		return fmt.Errorf("got %d files, wanted %d", gotFiles, wantFiles)
+	}
+	if haveFilestoreSidecar && (o.FilestoreSidecarFDIndex <= 0 || o.FilestoreSidecarFDIndex >= wantFiles) {
+		return fmt.Errorf("invalid filestore sidecar FD index %d", o.FilestoreSidecarFDIndex)
 	}
 
 	// Save to the first provided stream.
@@ -276,7 +281,7 @@ func setSaveOptsForLocalCheckpointFiles(o *SaveOpts, saveOpts *state.SaveOpts) e
 			Dest: dest.ReleaseToFile("filestore snapshot dest"),
 		})
 	}
-	if len(o.FilestoreSnapshot) > 0 {
+	if haveFilestoreSidecar {
 		sidecar, err := o.ReleaseFD(o.FilestoreSidecarFDIndex)
 		if err != nil {
 			return err

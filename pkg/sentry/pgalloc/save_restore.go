@@ -1198,16 +1198,17 @@ func (f *MemoryFile) LoadFrom(ctx context.Context, r io.Reader, opts *LoadOpts) 
 		if err != nil {
 			return fmt.Errorf("failed to stat adopted MemoryFile file: %w", err)
 		}
-		if pb.ContentExternalFileSize != 0 {
+		if uint64(fi.Size()) < fileSize {
+			return fmt.Errorf("adopted MemoryFile file size %d is smaller than required %d (state checkpoint and filestore artifact mismatch?)", fi.Size(), fileSize)
+		}
+		if pb.ContentExternalFileSize != 0 || pb.ContentExternalFingerprint != "" {
 			// Exact size match: an artifact with a different size cannot be
 			// the file that was checkpointed, even if it is large enough.
+			// A fingerprint also identifies a recorded zero size; only
+			// legacy metadata without either field uses the lower bound alone.
 			if uint64(fi.Size()) != pb.ContentExternalFileSize {
 				return fmt.Errorf("adopted MemoryFile file size %d != checkpointed filestore size %d (wrong or diverged filestore artifact)", fi.Size(), pb.ContentExternalFileSize)
 			}
-		} else if uint64(fi.Size()) < fileSize {
-			// Legacy checkpoint (saved before size/fingerprint recording):
-			// keep the weaker lower-bound check.
-			return fmt.Errorf("adopted MemoryFile file size %d is smaller than required %d (state checkpoint and filestore artifact mismatch?)", fi.Size(), fileSize)
 		}
 		if pb.ContentExternalFingerprint != "" {
 			fp, err := checkpoint.FingerprintFile(f.file)
@@ -1215,7 +1216,7 @@ func (f *MemoryFile) LoadFrom(ctx context.Context, r io.Reader, opts *LoadOpts) 
 				return fmt.Errorf("failed to fingerprint adopted MemoryFile file: %w", err)
 			}
 			if fp != pb.ContentExternalFingerprint {
-				return fmt.Errorf("adopted MemoryFile file fingerprint mismatch: got %s, checkpoint expects %s (artifact contents differ from the checkpointed filestore, e.g. the original filestore diverged after a leave-running checkpoint)", fp[:16], pb.ContentExternalFingerprint[:16])
+				return fmt.Errorf("adopted MemoryFile file fingerprint mismatch: got %.16s, checkpoint expects %.16s (artifact contents differ from the checkpointed filestore, e.g. the original filestore diverged after a leave-running checkpoint)", fp, pb.ContentExternalFingerprint)
 			}
 		}
 	}

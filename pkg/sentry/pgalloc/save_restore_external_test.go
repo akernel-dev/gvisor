@@ -19,6 +19,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +144,72 @@ func TestExternalContentRoundtrip(t *testing.T) {
 	}
 }
 
+func TestExternalContentEmptyRoundtrip(t *testing.T) {
+	for _, grow := range []bool{false, true} {
+		name := "empty"
+		if grow {
+			name = "unexpected_contents"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "filestore")
+			orig := newTestMemoryFile(t, path, false)
+			defer orig.Destroy()
+			var buf bytes.Buffer
+			if err := orig.SaveTo(context.Background(), &buf, &SaveOpts{ExternalContent: true}); err != nil {
+				t.Fatal(err)
+			}
+			if grow {
+				if err := os.WriteFile(path, []byte("unexpected contents"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			adopted := newTestMemoryFile(t, path, true)
+			defer adopted.Destroy()
+			err := adopted.LoadFrom(context.Background(), &buf, &LoadOpts{})
+			if grow {
+				if err == nil || !strings.Contains(err.Error(), "file size") {
+					t.Fatalf("LoadFrom: got %v, want size mismatch", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := adopted.ChunkCount(); got != 0 {
+				t.Fatalf("restored chunk count = %d, want 0", got)
+			}
+			// The restored empty layer must remain usable for new writes.
+			fr, err := adopted.Allocate(hostarch.PageSize, AllocOpts{Kind: usage.Anonymous})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTestRange(t, adopted, fr, 0x5a)
+			if got := readTestRange(t, adopted, fr); !bytes.Equal(got, bytes.Repeat([]byte{0x5a}, int(hostarch.PageSize))) {
+				t.Fatal("write to restored empty layer did not persist")
+			}
+		})
+	}
+}
+
+func TestExternalContentRejectsShortFingerprint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "filestore")
+	orig := newTestMemoryFile(t, path, false)
+	defer orig.Destroy()
+	// Emulate malformed snapshot credentials in serialized metadata.
+	orig.mu.Lock()
+	orig.externalSavedFingerprint = "x"
+	orig.mu.Unlock()
+	var buf bytes.Buffer
+	if err := orig.SaveTo(context.Background(), &buf, &SaveOpts{ExternalContent: true}); err != nil {
+		t.Fatal(err)
+	}
+	adopted := newTestMemoryFile(t, path, true)
+	defer adopted.Destroy()
+	if err := adopted.LoadFrom(context.Background(), &buf, &LoadOpts{}); err == nil || !strings.Contains(err.Error(), "fingerprint mismatch") {
+		t.Fatalf("LoadFrom: got %v, want fingerprint mismatch", err)
+	}
+}
+
 // TestExternalContentRequiresAdoption verifies that ContentExternal metadata
 // is rejected when the backing file was not adopted (i.e. was truncated empty
 // at creation), which would otherwise silently restore zero pages.
@@ -191,14 +258,16 @@ func TestExternalContentRejectsUndersizedAdoption(t *testing.T) {
 	}
 	metadataImage := buf.Bytes()
 
-	// Shrink the host file below the chunk-table requirement.
-	if err := os.Truncate(path, hostarch.PageSize); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
-
-	adopted := newTestMemoryFile(t, path, true)
-	if err := adopted.LoadFrom(context.Background(), bytes.NewReader(metadataImage), &LoadOpts{}); err == nil {
-		t.Fatal("LoadFrom(ContentExternal) with undersized adopted file unexpectedly succeeded")
+	// Both an undersized file and an empty file must be rejected when
+	// the saved chunk table describes a nonempty writable layer.
+	for _, size := range []int64{hostarch.PageSize, 0} {
+		if err := os.Truncate(path, size); err != nil {
+			t.Fatalf("truncate: %v", err)
+		}
+		adopted := newTestMemoryFile(t, path, true)
+		if err := adopted.LoadFrom(context.Background(), bytes.NewReader(metadataImage), &LoadOpts{}); err == nil {
+			t.Fatalf("LoadFrom(ContentExternal) with file size %d unexpectedly succeeded", size)
+		}
 	}
 }
 

@@ -128,9 +128,9 @@ func (a *filestoreAdopter) adopt(c *Container, dest string) (*os.File, error) {
 	if !fileInfo.Mode().IsRegular() {
 		return nil, fmt.Errorf("filestore artifact %q is not a regular file", artifactPath)
 	}
-	if fileInfo.Size() == 0 {
-		return nil, fmt.Errorf("filestore artifact %q is empty; it must contain the adopted writable-layer contents", artifactPath)
-	}
+	// An unused writable layer has no allocated chunks and a legitimately
+	// empty filestore. Verify it against the sidecar below; LoadFrom also
+	// checks the saved MemoryFile metadata before accepting the contents.
 	if !a.legacy {
 		// Sidecar credentials: exact size + sampled fingerprint, checked
 		// before the sandbox is started so a swapped or diverged artifact
@@ -150,7 +150,7 @@ func (a *filestoreAdopter) adopt(c *Container, dest string) (*os.File, error) {
 					return err
 				}
 				if fp != expFP {
-					return fmt.Errorf("fingerprint mismatch: got %s, sidecar records %s; artifact contents differ from what was checkpointed", fp[:16], expFP[:16])
+					return fmt.Errorf("fingerprint mismatch: got %.16s, sidecar records %.16s; artifact contents differ from what was checkpointed", fp, expFP)
 				}
 				return nil
 			}(); err != nil {

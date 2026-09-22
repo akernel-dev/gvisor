@@ -118,6 +118,18 @@ go_test(
 )
 
 go_test(
+    name = "filestore_snapshot_test",
+    size = "small",
+    srcs = ["filestore_snapshot_test.go"],
+    library = ":container",
+    deps = [
+        "//pkg/sentry/checkpoint",
+        "//runsc/config",
+        "@com_github_opencontainers_runtime_spec//specs-go:go_default_library",
+    ],
+)
+
+go_test(
     name = "serialization_test",
     srcs = ["serialization_test.go"],
     deps = [

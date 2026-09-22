@@ -97,6 +97,7 @@ go_test(
     srcs = [
         "fs_test.go",
         "proc_test.go",
+        "state_test.go",
     ],
     library = ":control",
     deps = [
@@ -104,6 +105,7 @@ go_test(
         "//pkg/context",
         "//pkg/errors/linuxerr",
         "//pkg/log",
+        "//pkg/sentry/checkpoint",
         "//pkg/sentry/contexttest",
         "//pkg/sentry/kernel/auth",
         "//pkg/sentry/ktime",

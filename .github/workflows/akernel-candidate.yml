@@ -86,6 +86,7 @@ jobs:
           ${{ runner.temp }}/gvisor-candidate/gvisor-${{ matrix.arch }}.tar.bz2.sha512
         if-no-files-found: error
         compression-level: 0
+        overwrite: true
         retention-days: 30
 
   assemble:
@@ -170,6 +171,7 @@ jobs:
           ${{ runner.temp }}/gvisor-candidate/manifest.json
         if-no-files-found: error
         compression-level: 0
+        overwrite: true
         retention-days: 30
 
     - name: Summarize candidate

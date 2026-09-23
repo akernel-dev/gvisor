@@ -80,7 +80,6 @@ jobs:
         test "$(jq -r '.head_sha' <<<"${run_json}")" = "${commit}"
 
         cd "${candidate_dir}"
-        expected_contents=$'containerd-shim-runsc-v1\ngvisor-bin/checkpointgofer\ngvisor-bin/gvisor-sentry-prewarmer\ngvisor-bin/gvisor_sentry\ngvisor-bin/runsc-metric-server\nrunsc'
         for arch in amd64 arm64; do
           archive="gvisor-${arch}.tar.bz2"
           test -f "${archive}"
@@ -91,27 +90,15 @@ jobs:
             "${archive}.sha512"
           test "${actual_sha512}" = \
             "$(jq -er --arg arch "${arch}" '.archives[$arch].sha512' "${manifest}")"
-          contents="$(tar -tjf "${archive}" \
-            | sed 's#^\./##' | grep -v '/$' | sort)"
-          test "${contents}" = "${expected_contents}"
-          test "${contents}" = "$(jq -er '.contents' "${manifest}")"
-          verify_dir="${RUNNER_TEMP}/gvisor-verify-${arch}"
-          mkdir -p "${verify_dir}"
-          tar -xjf "${archive}" -C "${verify_dir}"
           if [[ "${arch}" == amd64 ]]; then
-            "${verify_dir}/runsc" --version
+            bash "${GITHUB_WORKSPACE}/tools/akernel-release-archive.sh" verify \
+              "${arch}" "${candidate_dir}/${archive}" --run
+          else
+            bash "${GITHUB_WORKSPACE}/tools/akernel-release-archive.sh" verify \
+              "${arch}" "${candidate_dir}/${archive}"
           fi
-          case "${arch}" in
-            amd64) machine='Advanced Micro Devices X86-64' ;;
-            arm64) machine='AArch64' ;;
-          esac
-          for binary in runsc containerd-shim-runsc-v1 \
-            gvisor-bin/checkpointgofer gvisor-bin/gvisor-sentry-prewarmer \
-            gvisor-bin/gvisor_sentry gvisor-bin/runsc-metric-server; do
-            readelf -h "${verify_dir}/${binary}" \
-              | grep -Eq "Machine:[[:space:]]+${machine}$"
-          done
-          rm -rf "${verify_dir}"
+          contents="$(tar -tjf "${archive}" | grep -v '/$' | sort)"
+          test "${contents}" = "$(jq -er '.contents' "${manifest}")"
         done
 
         git -C "${GITHUB_WORKSPACE}" fetch origin develop

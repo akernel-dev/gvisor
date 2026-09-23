@@ -75,36 +75,7 @@ jobs:
         ARCH: ${{ matrix.arch }}
       run: |
         set -euo pipefail
-
-        candidate_dir="${RUNNER_TEMP}/gvisor-candidate"
-        mkdir -p "${candidate_dir}"
-        case "${ARCH}" in
-          amd64) bazel_arch=x86_64 ;;
-          arm64) bazel_arch=aarch64 ;;
-        esac
-        make release-tarball DESTINATION="${candidate_dir}" \
-          BAZEL_OPTIONS="--config=${bazel_arch}"
-        test -f "${candidate_dir}/gvisor.tar.bz2"
-        mv "${candidate_dir}/gvisor.tar.bz2" \
-          "${candidate_dir}/gvisor-${ARCH}.tar.bz2"
-        (cd "${candidate_dir}" && sha512sum "gvisor-${ARCH}.tar.bz2" \
-          >"gvisor-${ARCH}.tar.bz2.sha512")
-
-        verify_dir="${RUNNER_TEMP}/gvisor-verify"
-        mkdir -p "${verify_dir}"
-        tar -xjf "${candidate_dir}/gvisor-${ARCH}.tar.bz2" -C "${verify_dir}"
-        "${verify_dir}/runsc" --version
-        case "${ARCH}" in
-          amd64) machine='Advanced Micro Devices X86-64' ;;
-          arm64) machine='AArch64' ;;
-        esac
-        for binary in runsc containerd-shim-runsc-v1 \
-          gvisor-bin/checkpointgofer gvisor-bin/gvisor-sentry-prewarmer \
-          gvisor-bin/gvisor_sentry gvisor-bin/runsc-metric-server; do
-          readelf -h "${verify_dir}/${binary}" \
-            | grep -Eq "Machine:[[:space:]]+${machine}$"
-        done
-        rm -rf "${verify_dir}"
+        bash tools/akernel-release-archive.sh build "${ARCH}" "${RUNNER_TEMP}/gvisor-candidate"
 
     - name: Upload architecture candidate
       uses: actions/upload-artifact@v4
@@ -144,6 +115,7 @@ jobs:
           asset_dir="${candidate_dir}/gvisor-candidate-${GITHUB_RUN_ID}-${arch}"
           archive="${asset_dir}/gvisor-${arch}.tar.bz2"
           test -f "${archive}"
+          bash tools/akernel-release-archive.sh verify "${arch}" "${archive}"
           archive_sha512="$(sha512sum "${archive}" | cut -d ' ' -f 1)"
           cmp -s <(printf '%s  %s\n' "${archive_sha512}" "gvisor-${arch}.tar.bz2") \
             "${asset_dir}/gvisor-${arch}.tar.bz2.sha512"
@@ -156,12 +128,10 @@ jobs:
         git merge-base --is-ancestor "${upstream_tag}" "${GITHUB_SHA}"
         changes="$(git log --format='%H %s' "${upstream_tag}..${GITHUB_SHA}")"
         contents="$(tar -tjf "${candidate_dir}/gvisor-amd64.tar.bz2" \
-          | sed 's#^\./##' | grep -v '/$' | sort)"
+          | grep -v '/$' | sort)"
         arm_contents="$(tar -tjf "${candidate_dir}/gvisor-arm64.tar.bz2" \
-          | sed 's#^\./##' | grep -v '/$' | sort)"
+          | grep -v '/$' | sort)"
         test "${contents}" = "${arm_contents}"
-        expected_contents=$'containerd-shim-runsc-v1\ngvisor-bin/checkpointgofer\ngvisor-bin/gvisor-sentry-prewarmer\ngvisor-bin/gvisor_sentry\ngvisor-bin/runsc-metric-server\nrunsc'
-        test "${contents}" = "${expected_contents}"
         jq -n \
           --arg repository "${GITHUB_REPOSITORY}" \
           --arg commit "${GITHUB_SHA}" \

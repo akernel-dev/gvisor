@@ -53,22 +53,10 @@ jobs:
         commit="$(jq -er '.head_sha' <<<"${run_json}")"
         [[ "${commit}" =~ ^[0-9a-f]{40}$ ]]
 
-        prefix="gvisor-candidate-${CANDIDATE_RUN_ID}"
         artifact_json="$(gh api \
-          "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/artifacts")"
-        names="$(jq -r '.artifacts[] | select(.expired | not) | .name' \
-          <<<"${artifact_json}" | sort)"
-        arch_names="$(printf '%s\n' "${prefix}-amd64" "${prefix}-arm64" | sort)"
-        legacy_names="$(printf '%s\n' "${prefix}" "${prefix}-amd64" \
-          "${prefix}-arm64" | sort)"
-        if [[ "${names}" == "${arch_names}" ]]; then
-          layout=arch
-        elif [[ "${names}" == "${legacy_names}" ]]; then
-          layout=legacy
-        else
-          echo "unexpected or expired candidate artifacts for run ${CANDIDATE_RUN_ID}" >&2
-          exit 1
-        fi
+          "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/artifacts?per_page=100")"
+        layout="$(python3 tools/akernel-candidate-manifest.py identify-layout \
+          "${CANDIDATE_RUN_ID}" <<<"${artifact_json}")"
         echo "layout=${layout}" >>"${GITHUB_OUTPUT}"
         echo "commit=${commit}" >>"${GITHUB_OUTPUT}"
 

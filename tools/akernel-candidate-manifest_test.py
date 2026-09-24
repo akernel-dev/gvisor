@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+
+# Copyright 2026 The gVisor Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Exercise candidate metadata and cross-architecture validation."""
 
 import hashlib
@@ -74,6 +89,46 @@ class CandidateManifestTest(unittest.TestCase):
         metadata.write_text(json.dumps(value))
         with self.assertRaisesRegex(SystemExit, "architecture metadata differs"):
             self.assemble()
+
+    def test_identifies_two_architecture_artifacts(self):
+        listing = self.architecture_artifacts()
+        self.assertEqual(candidate.identify_layout(listing, RUN_ID), "arch")
+
+    def test_identifies_legacy_three_artifact_candidate(self):
+        listing = self.artifact_listing((
+            f"gvisor-candidate-{RUN_ID}",
+            f"gvisor-candidate-{RUN_ID}-amd64",
+            f"gvisor-candidate-{RUN_ID}-arm64",
+        ))
+        self.assertEqual(candidate.identify_layout(listing, RUN_ID), "legacy")
+
+    def test_rejects_missing_expired_or_extra_artifacts(self):
+        listing = self.architecture_artifacts()
+        listing["artifacts"][1]["expired"] = True
+        with self.assertRaisesRegex(SystemExit, "unexpected or expired"):
+            candidate.identify_layout(listing, RUN_ID)
+        listing["artifacts"][1]["expired"] = False
+        listing["artifacts"].append({"name": "unexpected", "expired": False})
+        listing["total_count"] += 1
+        with self.assertRaisesRegex(SystemExit, "unexpected or expired"):
+            candidate.identify_layout(listing, RUN_ID)
+
+    def test_rejects_incomplete_artifact_listing(self):
+        listing = self.architecture_artifacts()
+        listing["total_count"] += 1
+        with self.assertRaisesRegex(SystemExit, "incomplete artifact listing"):
+            candidate.identify_layout(listing, RUN_ID)
+
+    @staticmethod
+    def artifact_listing(names):
+        artifacts = [{"name": name, "expired": False} for name in names]
+        return {"total_count": len(artifacts), "artifacts": artifacts}
+
+    @classmethod
+    def architecture_artifacts(cls):
+        return cls.artifact_listing(
+            f"gvisor-candidate-{RUN_ID}-{arch}" for arch in ("amd64", "arm64")
+        )
 
 
 if __name__ == "__main__":

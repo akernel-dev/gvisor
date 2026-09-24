@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+
+# Copyright 2026 The gVisor Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Describe and assemble the two architecture-specific AKernel candidates."""
 
 import hashlib
@@ -36,6 +51,20 @@ def digest_and_contents(archive):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def identify_layout(listing, run_id):
+    require(run_id.isdecimal() and int(run_id) > 0, "invalid run ID")
+    artifacts = listing["artifacts"]
+    require(listing["total_count"] == len(artifacts), "incomplete artifact listing")
+    prefix = f"gvisor-candidate-{run_id}"
+    names = sorted(artifact["name"] for artifact in artifacts if not artifact["expired"])
+    architecture_names = sorted(f"{prefix}-{arch}" for arch in ARCHES)
+    if names == architecture_names:
+        return "arch"
+    if names == sorted([prefix, *architecture_names]):
+        return "legacy"
+    raise SystemExit(f"unexpected or expired candidate artifacts for run {run_id}")
 
 
 def create_arch(arch, archive, repository, commit, release_tag, run_id, output):
@@ -113,5 +142,12 @@ if __name__ == "__main__":
     elif command == "assemble" and len(args) == 5:
         directory, repository, commit, run_id, output = args
         assemble(Path(directory), repository, commit, run_id, Path(output))
+    elif command == "identify-layout" and len(args) == 1:
+        print(identify_layout(json.load(sys.stdin), args[0]))
     else:
-        raise SystemExit("usage: akernel-candidate-manifest.py create-arch ARCH ARCHIVE REPO COMMIT TAG RUN_ID OUTPUT | assemble DIR REPO COMMIT RUN_ID OUTPUT")
+        raise SystemExit(
+            "usage: akernel-candidate-manifest.py "
+            "create-arch ARCH ARCHIVE REPO COMMIT TAG RUN_ID OUTPUT | "
+            "assemble DIR REPO COMMIT RUN_ID OUTPUT | "
+            "identify-layout RUN_ID < ARTIFACTS_JSON"
+        )

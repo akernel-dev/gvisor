@@ -9,6 +9,7 @@ go_library(
     name = "container",
     srcs = [
         "container.go",
+        "filestore_snapshot.go",
         "gofer_to_host_rpc.go",
         "null_netns.go",
         "state_file.go",
@@ -22,6 +23,7 @@ go_library(
         "//pkg/abi/linux",
         "//pkg/cleanup",
         "//pkg/log",
+        "//pkg/sentry/checkpoint",
         "//pkg/sentry/control",
         "//pkg/sentry/fsimpl/erofs",
         "//pkg/sentry/fsimpl/tmpfs",
@@ -112,6 +114,18 @@ go_test(
         "@org_golang_google_protobuf//proto:go_default_library",
         "@org_golang_google_protobuf//types/known/emptypb:go_default_library",
         "@org_golang_x_sys//unix:go_default_library",
+    ],
+)
+
+go_test(
+    name = "filestore_snapshot_test",
+    size = "small",
+    srcs = ["filestore_snapshot_test.go"],
+    library = ":container",
+    deps = [
+        "//pkg/sentry/checkpoint",
+        "//runsc/config",
+        "@com_github_opencontainers_runtime_spec//specs-go:go_default_library",
     ],
 )
 

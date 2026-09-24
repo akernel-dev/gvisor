@@ -20,7 +20,15 @@ permissions:
 jobs:
   build:
     if: github.ref_name == 'develop'
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
@@ -59,73 +67,111 @@ jobs:
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive
         sudo -E apt-get update
-        sudo -E apt-get install -y bzip2 make
+        sudo -E apt-get install -y binutils bzip2 make
 
     - name: Build release tarball
       shell: bash
-      run: |
-        set -euo pipefail
-
-        candidate_dir="${RUNNER_TEMP}/gvisor-candidate"
-        mkdir -p "${candidate_dir}"
-        make release-tarball DESTINATION="${candidate_dir}"
-        test -f "${candidate_dir}/gvisor.tar.bz2"
-
-        verify_dir="${RUNNER_TEMP}/gvisor-verify"
-        mkdir -p "${verify_dir}"
-        tar -xjf "${candidate_dir}/gvisor.tar.bz2" -C "${verify_dir}"
-        "${verify_dir}/runsc" --version
-        rm -rf "${verify_dir}"
-
-    - name: Create candidate manifest
-      shell: bash
       env:
-        UPSTREAM_TAG: ${{ steps.candidate.outputs.upstream_tag }}
+        ARCH: ${{ matrix.arch }}
       run: |
         set -euo pipefail
+        bash tools/akernel-release-archive.sh build "${ARCH}" "${RUNNER_TEMP}/gvisor-candidate"
 
+    - name: Upload architecture candidate
+      uses: actions/upload-artifact@v4
+      with:
+        name: gvisor-candidate-${{ github.run_id }}-${{ matrix.arch }}
+        path: |
+          ${{ runner.temp }}/gvisor-candidate/gvisor-${{ matrix.arch }}.tar.bz2
+          ${{ runner.temp }}/gvisor-candidate/gvisor-${{ matrix.arch }}.tar.bz2.sha512
+        if-no-files-found: error
+        compression-level: 0
+        overwrite: true
+        retention-days: 30
+
+  assemble:
+    needs: build
+    runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Download architecture candidates
+      uses: actions/download-artifact@v5
+      with:
+        pattern: gvisor-candidate-${{ github.run_id }}-*
+        path: ${{ runner.temp }}/gvisor-candidate
+
+    - name: Verify and describe candidate
+      shell: bash
+      run: |
+        set -euo pipefail
         candidate_dir="${RUNNER_TEMP}/gvisor-candidate"
-        cd "${candidate_dir}"
-        sha512sum gvisor.tar.bz2 >gvisor.tar.bz2.sha512
-        tarball_sha512="$(cut -d ' ' -f 1 gvisor.tar.bz2.sha512)"
-        changes="$(git -C "${GITHUB_WORKSPACE}" log \
-          --format='%H %s' "${UPSTREAM_TAG}..${GITHUB_SHA}")"
-
-        contents="$(tar -tjf gvisor.tar.bz2 \
-          | sed 's#^\./##' | grep -v '/$' | sort)"
-
+        for arch in amd64 arm64; do
+          asset_dir="${candidate_dir}/gvisor-candidate-${GITHUB_RUN_ID}-${arch}"
+          archive="${asset_dir}/gvisor-${arch}.tar.bz2"
+          test -f "${archive}"
+          bash tools/akernel-release-archive.sh verify "${arch}" "${archive}"
+          archive_sha512="$(sha512sum "${archive}" | cut -d ' ' -f 1)"
+          cmp -s <(printf '%s  %s\n' "${archive_sha512}" "gvisor-${arch}.tar.bz2") \
+            "${asset_dir}/gvisor-${arch}.tar.bz2.sha512"
+          mv "${archive}" "${candidate_dir}/"
+          mv "${asset_dir}/gvisor-${arch}.tar.bz2.sha512" "${candidate_dir}/"
+        done
+        upstream_tag="${RELEASE_TAG%-akernel.*}"
+        git fetch --force --no-tags https://github.com/google/gvisor.git \
+          "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+        git merge-base --is-ancestor "${upstream_tag}" "${GITHUB_SHA}"
+        changes="$(git log --format='%H %s' "${upstream_tag}..${GITHUB_SHA}")"
+        contents="$(tar -tjf "${candidate_dir}/gvisor-amd64.tar.bz2" \
+          | grep -v '/$' | sort)"
+        arm_contents="$(tar -tjf "${candidate_dir}/gvisor-arm64.tar.bz2" \
+          | grep -v '/$' | sort)"
+        test "${contents}" = "${arm_contents}"
         jq -n \
           --arg repository "${GITHUB_REPOSITORY}" \
           --arg commit "${GITHUB_SHA}" \
-          --arg upstream_tag "${UPSTREAM_TAG}" \
+          --arg upstream_tag "${upstream_tag}" \
           --arg release_tag "${RELEASE_TAG}" \
           --arg workflow_run_id "${GITHUB_RUN_ID}" \
-          --arg tarball_sha512 "${tarball_sha512}" \
+          --arg amd64_sha512 "$(cut -d ' ' -f 1 "${candidate_dir}/gvisor-amd64.tar.bz2.sha512")" \
+          --arg arm64_sha512 "$(cut -d ' ' -f 1 "${candidate_dir}/gvisor-arm64.tar.bz2.sha512")" \
           --arg contents "${contents}" \
           --arg changes "${changes}" \
           '{
-            schema: 2,
+            schema: 3,
             repository: $repository,
             commit: $commit,
             upstream_tag: $upstream_tag,
             release_tag: $release_tag,
             workflow_run_id: $workflow_run_id,
-            tarball_sha512: $tarball_sha512,
+            archives: {
+              amd64: {name: "gvisor-amd64.tar.bz2", sha512: $amd64_sha512},
+              arm64: {name: "gvisor-arm64.tar.bz2", sha512: $arm64_sha512}
+            },
             contents: $contents,
             changes: $changes
-          }' >manifest.json
+          }' >"${candidate_dir}/manifest.json"
 
-    - name: Upload candidate
+    - name: Upload complete candidate
       id: upload
       uses: actions/upload-artifact@v4
       with:
         name: gvisor-candidate-${{ github.run_id }}
         path: |
-          ${{ runner.temp }}/gvisor-candidate/gvisor.tar.bz2
-          ${{ runner.temp }}/gvisor-candidate/gvisor.tar.bz2.sha512
+          ${{ runner.temp }}/gvisor-candidate/gvisor-amd64.tar.bz2
+          ${{ runner.temp }}/gvisor-candidate/gvisor-amd64.tar.bz2.sha512
+          ${{ runner.temp }}/gvisor-candidate/gvisor-arm64.tar.bz2
+          ${{ runner.temp }}/gvisor-candidate/gvisor-arm64.tar.bz2.sha512
           ${{ runner.temp }}/gvisor-candidate/manifest.json
         if-no-files-found: error
         compression-level: 0
+        overwrite: true
         retention-days: 30
 
     - name: Summarize candidate
@@ -134,9 +180,9 @@ jobs:
         {
           echo "### AKernel gVisor candidate"
           echo
-          echo "- Run ID: \`${GITHUB_RUN_ID}\`"
-          echo "- Planned release: \`${RELEASE_TAG}\`"
-          echo "- Commit: \`${GITHUB_SHA}\`"
-          echo "- Artifact digest: \`${{ steps.upload.outputs.artifact-digest }}\`"
+          echo "- Run ID: ${GITHUB_RUN_ID}"
+          echo "- Planned release: ${RELEASE_TAG}"
+          echo "- Commit: ${GITHUB_SHA}"
+          echo "- Artifact digest: ${{ steps.upload.outputs.artifact-digest }}"
           echo "- Artifact: ${{ steps.upload.outputs.artifact-url }}"
         } >>"${GITHUB_STEP_SUMMARY}"

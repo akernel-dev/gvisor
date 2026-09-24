@@ -76,6 +76,11 @@ jobs:
       run: |
         set -euo pipefail
         bash tools/akernel-release-archive.sh build "${ARCH}" "${RUNNER_TEMP}/gvisor-candidate"
+        python3 tools/akernel-candidate-manifest.py create-arch \
+          "${ARCH}" "${RUNNER_TEMP}/gvisor-candidate/gvisor-${ARCH}.tar.bz2" \
+          "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${RELEASE_TAG}" \
+          "${GITHUB_RUN_ID}" \
+          "${RUNNER_TEMP}/gvisor-candidate/candidate-${ARCH}.json"
 
     - name: Upload architecture candidate
       uses: actions/upload-artifact@v4
@@ -84,12 +89,13 @@ jobs:
         path: |
           ${{ runner.temp }}/gvisor-candidate/gvisor-${{ matrix.arch }}.tar.bz2
           ${{ runner.temp }}/gvisor-candidate/gvisor-${{ matrix.arch }}.tar.bz2.sha512
+          ${{ runner.temp }}/gvisor-candidate/candidate-${{ matrix.arch }}.json
         if-no-files-found: error
         compression-level: 0
         overwrite: true
         retention-days: 30
 
-  assemble:
+  verify:
     needs: build
     runs-on: ubuntu-24.04
     env:
@@ -117,62 +123,16 @@ jobs:
           archive="${asset_dir}/gvisor-${arch}.tar.bz2"
           test -f "${archive}"
           bash tools/akernel-release-archive.sh verify "${arch}" "${archive}"
-          archive_sha512="$(sha512sum "${archive}" | cut -d ' ' -f 1)"
-          cmp -s <(printf '%s  %s\n' "${archive_sha512}" "gvisor-${arch}.tar.bz2") \
-            "${asset_dir}/gvisor-${arch}.tar.bz2.sha512"
-          mv "${archive}" "${candidate_dir}/"
-          mv "${asset_dir}/gvisor-${arch}.tar.bz2.sha512" "${candidate_dir}/"
         done
         upstream_tag="${RELEASE_TAG%-akernel.*}"
         git fetch --force --no-tags https://github.com/google/gvisor.git \
           "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
         git merge-base --is-ancestor "${upstream_tag}" "${GITHUB_SHA}"
-        changes="$(git log --format='%H %s' "${upstream_tag}..${GITHUB_SHA}")"
-        contents="$(tar -tjf "${candidate_dir}/gvisor-amd64.tar.bz2" \
-          | grep -v '/$' | sort)"
-        arm_contents="$(tar -tjf "${candidate_dir}/gvisor-arm64.tar.bz2" \
-          | grep -v '/$' | sort)"
-        test "${contents}" = "${arm_contents}"
-        jq -n \
-          --arg repository "${GITHUB_REPOSITORY}" \
-          --arg commit "${GITHUB_SHA}" \
-          --arg upstream_tag "${upstream_tag}" \
-          --arg release_tag "${RELEASE_TAG}" \
-          --arg workflow_run_id "${GITHUB_RUN_ID}" \
-          --arg amd64_sha512 "$(cut -d ' ' -f 1 "${candidate_dir}/gvisor-amd64.tar.bz2.sha512")" \
-          --arg arm64_sha512 "$(cut -d ' ' -f 1 "${candidate_dir}/gvisor-arm64.tar.bz2.sha512")" \
-          --arg contents "${contents}" \
-          --arg changes "${changes}" \
-          '{
-            schema: 3,
-            repository: $repository,
-            commit: $commit,
-            upstream_tag: $upstream_tag,
-            release_tag: $release_tag,
-            workflow_run_id: $workflow_run_id,
-            archives: {
-              amd64: {name: "gvisor-amd64.tar.bz2", sha512: $amd64_sha512},
-              arm64: {name: "gvisor-arm64.tar.bz2", sha512: $arm64_sha512}
-            },
-            contents: $contents,
-            changes: $changes
-          }' >"${candidate_dir}/manifest.json"
-
-    - name: Upload complete candidate
-      id: upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: gvisor-candidate-${{ github.run_id }}
-        path: |
-          ${{ runner.temp }}/gvisor-candidate/gvisor-amd64.tar.bz2
-          ${{ runner.temp }}/gvisor-candidate/gvisor-amd64.tar.bz2.sha512
-          ${{ runner.temp }}/gvisor-candidate/gvisor-arm64.tar.bz2
-          ${{ runner.temp }}/gvisor-candidate/gvisor-arm64.tar.bz2.sha512
-          ${{ runner.temp }}/gvisor-candidate/manifest.json
-        if-no-files-found: error
-        compression-level: 0
-        overwrite: true
-        retention-days: 30
+        python3 tools/akernel-candidate-manifest.py assemble \
+          "${candidate_dir}" "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" \
+          "${GITHUB_RUN_ID}" "${RUNNER_TEMP}/manifest.json"
+        test "$(jq -r '.release_tag' "${RUNNER_TEMP}/manifest.json")" = \
+          "${RELEASE_TAG}"
 
     - name: Summarize candidate
       shell: bash
@@ -183,6 +143,7 @@ jobs:
           echo "- Run ID: ${GITHUB_RUN_ID}"
           echo "- Planned release: ${RELEASE_TAG}"
           echo "- Commit: ${GITHUB_SHA}"
-          echo "- Artifact digest: ${{ steps.upload.outputs.artifact-digest }}"
-          echo "- Artifact: ${{ steps.upload.outputs.artifact-url }}"
+          echo "- amd64 SHA-512: $(jq -r '.archives.amd64.sha512' "${RUNNER_TEMP}/manifest.json")"
+          echo "- arm64 SHA-512: $(jq -r '.archives.arm64.sha512' "${RUNNER_TEMP}/manifest.json")"
+          echo "- Artifacts: gvisor-candidate-${GITHUB_RUN_ID}-{amd64,arm64}"
         } >>"${GITHUB_STEP_SUMMARY}"

@@ -29,6 +29,10 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v5
 
+    - name: Test candidate metadata
+      if: matrix.arch == 'amd64'
+      run: python3 tools/akernel-candidate-manifest_test.py
+
     - name: Install build dependencies
       shell: bash
       run: |

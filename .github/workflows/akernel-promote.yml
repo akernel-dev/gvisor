@@ -40,13 +40,80 @@ jobs:
           exit 1
         fi
 
-    - name: Download candidate
+    - name: Identify candidate artifacts
+      id: artifacts
+      shell: bash
+      run: |
+        set -euo pipefail
+        run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}")"
+        test "$(jq -r '.path' <<<"${run_json}")" = \
+          ".github/workflows/akernel-candidate.yml"
+        test "$(jq -r '.event' <<<"${run_json}")" = "workflow_dispatch"
+        test "$(jq -r '.conclusion' <<<"${run_json}")" = "success"
+        commit="$(jq -er '.head_sha' <<<"${run_json}")"
+        [[ "${commit}" =~ ^[0-9a-f]{40}$ ]]
+
+        prefix="gvisor-candidate-${CANDIDATE_RUN_ID}"
+        artifact_json="$(gh api \
+          "repos/${GITHUB_REPOSITORY}/actions/runs/${CANDIDATE_RUN_ID}/artifacts")"
+        names="$(jq -r '.artifacts[] | select(.expired | not) | .name' \
+          <<<"${artifact_json}" | sort)"
+        arch_names="$(printf '%s\n' "${prefix}-amd64" "${prefix}-arm64" | sort)"
+        legacy_names="$(printf '%s\n' "${prefix}" "${prefix}-amd64" \
+          "${prefix}-arm64" | sort)"
+        if [[ "${names}" == "${arch_names}" ]]; then
+          layout=arch
+        elif [[ "${names}" == "${legacy_names}" ]]; then
+          layout=legacy
+        else
+          echo "unexpected or expired candidate artifacts for run ${CANDIDATE_RUN_ID}" >&2
+          exit 1
+        fi
+        echo "layout=${layout}" >>"${GITHUB_OUTPUT}"
+        echo "commit=${commit}" >>"${GITHUB_OUTPUT}"
+
+    - name: Download legacy candidate
+      if: steps.artifacts.outputs.layout == 'legacy'
       uses: actions/download-artifact@v5
       with:
         name: gvisor-candidate-${{ inputs.candidate_run_id }}
         path: ${{ runner.temp }}/gvisor-candidate
         github-token: ${{ github.token }}
         run-id: ${{ inputs.candidate_run_id }}
+
+    - name: Download architecture candidates
+      if: steps.artifacts.outputs.layout == 'arch'
+      uses: actions/download-artifact@v5
+      with:
+        pattern: gvisor-candidate-${{ inputs.candidate_run_id }}-*
+        path: ${{ runner.temp }}/gvisor-candidate
+        github-token: ${{ github.token }}
+        run-id: ${{ inputs.candidate_run_id }}
+
+    - name: Assemble architecture candidates
+      if: steps.artifacts.outputs.layout == 'arch'
+      shell: bash
+      env:
+        CANDIDATE_COMMIT: ${{ steps.artifacts.outputs.commit }}
+      run: |
+        set -euo pipefail
+        candidate_dir="${RUNNER_TEMP}/gvisor-candidate"
+        release_tag="$(jq -er '.release_tag' \
+          "${candidate_dir}/gvisor-candidate-${CANDIDATE_RUN_ID}-amd64/candidate-amd64.json")"
+        [[ "${release_tag}" =~ ^release-[0-9]{8}\.[0-9]+-akernel\.[1-9][0-9]*$ ]]
+        upstream_tag="${release_tag%-akernel.*}"
+        git fetch --force --no-tags https://github.com/google/gvisor.git \
+          "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
+        git cat-file -e "${CANDIDATE_COMMIT}^{commit}"
+        git merge-base --is-ancestor "${upstream_tag}" "${CANDIDATE_COMMIT}"
+        python3 tools/akernel-candidate-manifest.py assemble \
+          "${candidate_dir}" "${GITHUB_REPOSITORY}" "${CANDIDATE_COMMIT}" \
+          "${CANDIDATE_RUN_ID}" "${candidate_dir}/manifest.json"
+        for arch in amd64 arm64; do
+          asset_dir="${candidate_dir}/gvisor-candidate-${CANDIDATE_RUN_ID}-${arch}"
+          mv "${asset_dir}/gvisor-${arch}.tar.bz2" \
+            "${asset_dir}/gvisor-${arch}.tar.bz2.sha512" "${candidate_dir}/"
+        done
 
     - name: Validate candidate
       id: candidate
@@ -64,7 +131,11 @@ jobs:
         release_tag="$(jq -er '.release_tag' "${manifest}")"
         manifest_run_id="$(jq -er '.workflow_run_id' "${manifest}")"
 
-        test "$(jq -er '.schema' "${manifest}")" = 3
+        case "$(jq -er '.schema' "${manifest}")" in
+          3) test "${{ steps.artifacts.outputs.layout }}" = legacy ;;
+          4) test "${{ steps.artifacts.outputs.layout }}" = arch ;;
+          *) echo "unsupported candidate manifest schema" >&2; exit 1 ;;
+        esac
         test "${repository}" = "${GITHUB_REPOSITORY}"
         test "${manifest_run_id}" = "${CANDIDATE_RUN_ID}"
         [[ "${commit}" =~ ^[0-9a-f]{40}$ ]]

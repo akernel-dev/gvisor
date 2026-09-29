@@ -115,10 +115,13 @@ type protocol struct {
 	probe TCPProbeFunc `state:"nosave"`
 
 	// The following secrets are used for ISN and timestamp-offset
-	// generation. They are not serialized into checkpoint state and are
-	// freshly drawn from the secure RNG on restore.
-	seqnumSecret   [16]byte `state:"nosave"`
-	tsOffsetSecret [16]byte `state:"nosave"`
+	// generation. Preserve them across restore so new connections remain
+	// compatible with the restored peer TIME_WAIT and timestamp state.
+	seqnumSecret   [16]byte
+	tsOffsetSecret [16]byte
+
+	// Only used to resume the source stack after saving.
+	pausedTimeWaitEndpoints []*Endpoint `state:"nosave"`
 }
 
 // Number returns the tcp protocol number.
@@ -519,10 +522,36 @@ func (p *protocol) Wait() {
 // Pause implements stack.TransportProtocol.Pause.
 func (p *protocol) Pause() {
 	p.dispatcher.pause()
+	// Packet processors are stopped, but TIME_WAIT callbacks run independently.
+	// Freeze them before state traversal can observe endpoint slice mutation.
+	for _, transportEP := range p.stack.RegisteredEndpoints() {
+		ep, ok := transportEP.(*Endpoint)
+		if !ok || ep == nil || ep.protocol != p {
+			continue
+		}
+		ep.mu.Lock()
+		if ep.EndpointState() == StateTimeWait && !ep.timeWaitPaused {
+			ep.timeWaitPaused = true
+			if ep.timeWaitTimer != nil {
+				ep.timeWaitTimer.Stop()
+			}
+			p.pausedTimeWaitEndpoints = append(p.pausedTimeWaitEndpoints, ep)
+		}
+		ep.mu.Unlock()
+	}
 }
 
 // Resume implements stack.TransportProtocol.Resume.
 func (p *protocol) Resume() {
+	for _, ep := range p.pausedTimeWaitEndpoints {
+		ep.mu.Lock()
+		ep.timeWaitPaused = false
+		if ep.EndpointState() == StateTimeWait {
+			ep.restoreTimeWaitTimer()
+		}
+		ep.mu.Unlock()
+	}
+	p.pausedTimeWaitEndpoints = nil
 	p.dispatcher.resume()
 }
 

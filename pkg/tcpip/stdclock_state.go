@@ -19,9 +19,15 @@ import (
 	"time"
 )
 
-// beforeSave is invoked by stateify.
-func (s *stdClock) beforeSave() {
-	s.monotonicOffset = s.NowMonotonic()
+// saveMonotonicOffset snapshots elapsed time without changing the live clock.
+// Changing the offset while keeping baseTime would count elapsed time twice
+// when the original sandbox resumes after a checkpoint.
+func (s *stdClock) saveMonotonicOffset() MonotonicTime {
+	return s.NowMonotonic()
+}
+
+func (s *stdClock) loadMonotonicOffset(_ context.Context, offset MonotonicTime) {
+	s.monotonicOffset = offset
 }
 
 // afterLoad is invoked by stateify.

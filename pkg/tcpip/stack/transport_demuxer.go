@@ -179,6 +179,12 @@ func (epsByNIC *endpointsByNIC) handlePacket(id TransportEndpointID, pkt *Packet
 	}
 	// multiPortEndpoints are guaranteed to have at least one element.
 	transEP := mpep.selectEndpoint(id, epsByNIC.seed)
+	// A missing endpoint must follow the normal unmatched-packet path, not
+	// be handed to a protocol that requires a concrete endpoint.
+	if transEP == nil {
+		epsByNIC.mu.RUnlock()
+		return false
+	}
 	if queuedProtocol, mustQueue := mpep.demux.queuedProtocols[protocolIDs{mpep.netProto, mpep.transProto}]; mustQueue {
 		queuedProtocol.QueuePacket(transEP, id, pkt)
 		epsByNIC.mu.RUnlock()
@@ -210,7 +216,9 @@ func (epsByNIC *endpointsByNIC) handleError(n *nic, id TransportEndpointID, tran
 	transEP := mpep.selectEndpoint(id, epsByNIC.seed)
 	epsByNIC.mu.RUnlock()
 
-	transEP.HandleError(transErr, pkt)
+	if transEP != nil {
+		transEP.HandleError(transErr, pkt)
+	}
 }
 
 // registerEndpoint returns true if it succeeds. It fails and returns
@@ -381,6 +389,9 @@ func (ep *multiPortEndpoint) selectEndpoint(id TransportEndpointID, seed uint32)
 	ep.mu.RLock()
 	defer ep.mu.RUnlock()
 
+	if len(ep.endpoints) == 0 {
+		return nil
+	}
 	if len(ep.endpoints) == 1 {
 		return ep.endpoints[0]
 	}

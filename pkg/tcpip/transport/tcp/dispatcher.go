@@ -223,7 +223,8 @@ func startTimeWait(ep *Endpoint) {
 	// Wake up any waiters before we start TIME-WAIT.
 	ep.waiterQueue.Notify(waiter.EventHUp | waiter.EventErr | waiter.ReadableEvents | waiter.WritableEvents)
 	timeWaitDuration := ep.getTimeWaitDuration()
-	ep.timeWaitTimer = ep.stack.Clock().AfterFunc(timeWaitDuration, ep.timeWaitTimerExpired)
+	ep.timeWaitDeadline = ep.stack.Clock().NowMonotonic().Add(timeWaitDuration)
+	ep.restoreTimeWaitTimer()
 }
 
 // handleTimeWait is responsible for TCP processing for an endpoint in TIME-WAIT
@@ -251,7 +252,9 @@ func handleTimeWait(ep *Endpoint) {
 		return
 	}
 	if extendTimeWait {
-		ep.timeWaitTimer.Reset(ep.getTimeWaitDuration())
+		duration := ep.getTimeWaitDuration()
+		ep.timeWaitDeadline = ep.stack.Clock().NowMonotonic().Add(duration)
+		ep.timeWaitTimer.Reset(duration)
 	}
 	ep.mu.Unlock()
 }

@@ -279,7 +279,7 @@ func (e *Endpoint) Restore(s *stack.Stack) {
 		case StateFinWait2:
 			e.finWait2Timer = e.stack.Clock().AfterFunc(e.tcpLingerTimeout, e.finWait2TimerExpired)
 		case StateTimeWait:
-			e.timeWaitTimer = e.stack.Clock().AfterFunc(e.getTimeWaitDuration(), e.timeWaitTimerExpired)
+			e.restoreTimeWaitTimer()
 		}
 
 		if e.ops.GetCorkOption() {
@@ -385,4 +385,14 @@ func (e *Endpoint) requeueOnRestore() {
 		return
 	}
 	e.protocol.dispatcher.selectProcessor(e.TransportEndpointInfo.ID).queueEndpoint(e)
+}
+
+// restoreTimeWaitTimer preserves the remaining interval on the restored clock.
+// +checklocks:e.mu
+func (e *Endpoint) restoreTimeWaitTimer() {
+	remaining := e.timeWaitDeadline.Sub(e.stack.Clock().NowMonotonic())
+	if remaining < 0 {
+		remaining = 0
+	}
+	e.timeWaitTimer = e.stack.Clock().AfterFunc(remaining, e.timeWaitTimerExpired)
 }

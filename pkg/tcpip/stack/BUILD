@@ -331,6 +331,7 @@ go_test(
         "neighbor_entry_test.go",
         "nic_test.go",
         "packet_buffer_test.go",
+        "transport_demuxer_internal_test.go",
     ],
     library = ":stack",
     deps = [

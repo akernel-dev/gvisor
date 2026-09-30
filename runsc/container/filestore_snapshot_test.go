@@ -22,7 +22,9 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"gvisor.dev/gvisor/pkg/sentry/checkpoint"
+	"gvisor.dev/gvisor/runsc/boot"
 	"gvisor.dev/gvisor/runsc/config"
+	"gvisor.dev/gvisor/runsc/specutils"
 )
 
 func TestFilestoreArtifactAdoption(t *testing.T) {
@@ -107,6 +109,65 @@ func TestFilestoreArtifactAdoption(t *testing.T) {
 			}
 			if got := info.Size(); got != int64(len(tc.artifact)) {
 				t.Errorf("adopted file size = %d, want %d", got, len(tc.artifact))
+			}
+		})
+	}
+}
+
+func TestAnonymousFilestoreMountConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, overlay      string
+		anonymous, wantErr bool
+	}{
+		{"anonymous", "root:dir=/filestore", true, false},
+		{"memory", "root:memory", true, true},
+		{"self", "root:self", true, true},
+		{"disabled", "none", true, true},
+		{"legacy", "root:dir=/filestore", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source := t.TempDir()
+			annotations := map[string]string{
+				boot.MountPrefix + "data.source": source,
+				boot.MountPrefix + "data.type":   "tmpfs",
+				boot.MountPrefix + "data.share":  "container",
+			}
+			if tc.anonymous {
+				annotations[boot.MountPrefix+"data.filestore"] = "anonymous"
+			}
+			spec := &specs.Spec{
+				Root:        &specs.Root{Path: source, Readonly: true},
+				Mounts:      []specs.Mount{{Source: source, Destination: "/data", Type: "bind"}},
+				Annotations: annotations,
+			}
+			hints, err := boot.NewPodMountHints(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var overlay config.Overlay2
+			if err := overlay.Set(tc.overlay); err != nil {
+				t.Fatal(err)
+			}
+			c := &Container{Spec: spec}
+			err = c.initGoferConfs(overlay, hints, nil)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "requires overlay2 dir= medium") {
+					t.Fatalf("got %v, want unsupported backing error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(c.GoferMountConfs) != 2 {
+				t.Fatalf("got %d mount configs, want 2", len(c.GoferMountConfs))
+			}
+			want := specutils.GoferMountConf{Lower: specutils.NoneLower, Upper: specutils.SelfOverlay}
+			if tc.anonymous {
+				want.Upper = specutils.AnonOverlay
+			}
+			if got := c.GoferMountConfs[1]; got != want {
+				t.Fatalf("mount config = %+v, want %+v", got, want)
 			}
 		})
 	}

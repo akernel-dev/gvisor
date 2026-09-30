@@ -124,7 +124,9 @@ go_test(
     library = ":container",
     deps = [
         "//pkg/sentry/checkpoint",
+        "//runsc/boot",
         "//runsc/config",
+        "//runsc/specutils",
         "@com_github_opencontainers_runtime_spec//specs-go:go_default_library",
     ],
 )

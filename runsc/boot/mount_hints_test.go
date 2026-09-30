@@ -465,3 +465,39 @@ func TestRootfsHintErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestAnonymousFilestoreHint(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, share, filestore string
+		valid                        bool
+	}{
+		{"container tmpfs", "tmpfs", "container", "anonymous", true},
+		{"shared pod", "tmpfs", "pod", "anonymous", false},
+		{"host shared", "tmpfs", "shared", "anonymous", false},
+		{"bind", "bind", "container", "anonymous", false},
+		{"missing type", "", "container", "anonymous", false},
+		{"missing share", "tmpfs", "", "anonymous", false},
+		{"invalid mode", "tmpfs", "container", "unknown", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hints, err := NewPodMountHints(&specs.Spec{Annotations: map[string]string{
+				MountPrefix + "data.source":    "/data/source",
+				MountPrefix + "data.type":      tc.kind,
+				MountPrefix + "data.share":     tc.share,
+				MountPrefix + "data.filestore": tc.filestore,
+			}})
+			if !tc.valid {
+				if err == nil {
+					t.Fatal("invalid anonymous filestore accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hints.Mounts["data"].AnonymousFilestore {
+				t.Fatal("anonymous filestore not enabled")
+			}
+		})
+	}
+}

@@ -95,6 +95,9 @@ func NewPodMountHints(spec *specs.Spec) (*PodMountHints, error) {
 				mnts[name] = mnt
 			}
 			if err := mnt.setField(parts[1], v); err != nil {
+				if parts[1] == "filestore" {
+					return nil, err
+				}
 				log.Warningf("ignoring invalid mount annotation (name = %q, key = %q, value = %q): %v", name, parts[1], v, err)
 			}
 		}
@@ -103,6 +106,10 @@ func NewPodMountHints(spec *specs.Spec) (*PodMountHints, error) {
 	// Validate all the parsed hints.
 	for name, m := range mnts {
 		log.Infof("Mount annotation found, name: %s, source: %q, type: %s, share: %v, suppress_directfs: %t", name, m.Mount.Source, m.Mount.Type, m.Share, m.SuppressDirectFS)
+		if m.AnonymousFilestore && (m.Share != container || m.Mount.Type != "tmpfs" || m.Mount.Source == "") {
+			return nil, fmt.Errorf("mount %q: anonymous filestore requires type=tmpfs and share=container", name)
+		}
+
 		if m.Share == invalid || len(m.Mount.Source) == 0 || len(m.Mount.Type) == 0 {
 			log.Warningf("ignoring mount annotations for %q because of missing required field(s)", name)
 			delete(mnts, name)
@@ -130,6 +137,10 @@ type MountHint struct {
 	Share ShareType   `json:"share"`
 	Mount specs.Mount `json:"mount"`
 
+	// AnonymousFilestore backs a container-local tmpfs using an anonymous file
+	// in the overlay2 dir= medium. This enables isolated checkpoint adoption.
+	AnonymousFilestore bool `json:"anonymousFilestore,omitempty"`
+
 	// SuppressDirectFS suppresses the "directfs" gofer mount option for this
 	// mount even if --directfs is enabled globally. It does not enable directfs
 	// when --directfs is disabled because directfs requires some sandbox-wide
@@ -151,6 +162,11 @@ func (m *MountHint) setField(key, val string) error {
 		return m.setShare(val)
 	case "options":
 		m.Mount.Options = specutils.FilterMountOptions(strings.Split(val, ","))
+	case "filestore":
+		if val != "anonymous" {
+			return fmt.Errorf("invalid filestore %q, want anonymous", val)
+		}
+		m.AnonymousFilestore = true
 	case "directfs":
 		return m.setDirectFS(val)
 	default:

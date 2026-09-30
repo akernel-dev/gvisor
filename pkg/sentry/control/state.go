@@ -67,6 +67,17 @@ type State struct {
 	Watchdog *watchdog.Watchdog
 }
 
+// FilestoreSnapshotTarget identifies one filestore snapshot destination for
+// the Save RPC's FilePayload.
+type FilestoreSnapshotTarget struct {
+	ResourceID checkpoint.ResourceID `json:"resource_id"`
+	// Name is the artifact file name the destination will get in the
+	// snapshot directory (e.g. "filestore-0"); it is recorded in the
+	// filestores.json sidecar.
+	Name    string `json:"name"`
+	FDIndex int    `json:"fd_index"`
+}
+
 // SaveOpts contains options for the Save RPC call.
 type SaveOpts struct {
 	// Key is used to enable state integrity check.
@@ -79,6 +90,26 @@ type SaveOpts struct {
 	// pgalloc.SaveOpts.ExcludeCommittedZeroPages for the application memory
 	// file.
 	AppMFExcludeCommittedZeroPages bool `json:"app_mf_exclude_committed_zero_pages"`
+
+	// PrivateMFExternalContent is the value of
+	// pgalloc.SaveOpts.ExternalContent for private (disk-backed) MemoryFiles.
+	// If true, their page contents are not saved into the checkpoint; the
+	// backing host files (gofer filestore files) must be captured out-of-band
+	// and provided for adoption on restore.
+	PrivateMFExternalContent bool `json:"private_mf_external_content"`
+
+	// FilestoreSnapshot specifies in-freeze-window filestore snapshots: each
+	// private MemoryFile matching a target's ResourceID is FICLONE'd to the
+	// target's donated destination FD after the kernel pauses and before
+	// memory-file metadata is serialized, so the snapshot and the saved
+	// metadata describe the same instant (valid with Resume/leave-running).
+	FilestoreSnapshot []FilestoreSnapshotTarget `json:"filestore_snapshot,omitempty"`
+
+	// FilestoreSidecarFDIndex is the index into FilePayload.Files of the
+	// donated file that receives the filestores.json artifact manifest
+	// during the save window. Zero means absent (FD 0 is the state file).
+	// A sidecar may be donated even when there are no filestore mounts.
+	FilestoreSidecarFDIndex int `json:"filestore_sidecar_fd_index,omitempty"`
 
 	// HavePagesFile indicates whether the pages file and its corresponding
 	// metadata file is provided.
@@ -140,6 +171,7 @@ func ConvertToStateSaveOpts(o *SaveOpts) (*state.SaveOpts, error) {
 		Key:                            o.Key,
 		Metadata:                       o.Metadata,
 		AppMFExcludeCommittedZeroPages: o.AppMFExcludeCommittedZeroPages,
+		PrivateMFExternalContent:       o.PrivateMFExternalContent,
 		Resume:                         o.Resume,
 		CudaCheckpointPath:             o.CudaCheckpointPath,
 		CudaCheckpointSequential:       o.CudaCheckpointSequential,
@@ -171,8 +203,17 @@ func setSaveOptsForLocalCheckpointFiles(o *SaveOpts, saveOpts *state.SaveOpts) e
 	if len(o.SplitFSCheckpointPaths) > 0 {
 		wantFiles += 4
 	}
+	// In-window filestore snapshot destinations and the sidecar manifest file.
+	wantFiles += len(o.FilestoreSnapshot)
+	haveFilestoreSidecar := o.FilestoreSidecarFDIndex != 0 || len(o.FilestoreSnapshot) > 0
+	if haveFilestoreSidecar {
+		wantFiles++ // sidecar
+	}
 	if gotFiles := len(o.FilePayload.Files); gotFiles != wantFiles {
 		return fmt.Errorf("got %d files, wanted %d", gotFiles, wantFiles)
+	}
+	if haveFilestoreSidecar && (o.FilestoreSidecarFDIndex <= 0 || o.FilestoreSidecarFDIndex >= wantFiles) {
+		return fmt.Errorf("invalid filestore sidecar FD index %d", o.FilestoreSidecarFDIndex)
 	}
 
 	// Save to the first provided stream.
@@ -200,7 +241,6 @@ func setSaveOptsForLocalCheckpointFiles(o *SaveOpts, saveOpts *state.SaveOpts) e
 		}
 		saveOpts.PagesFile = stateio.NewPagesFileFDWriterDefault(int32(pagesFileFD))
 	}
-
 	if len(o.SplitFSCheckpointPaths) > 0 {
 		manifestFile, err := o.ReleaseFD(fsFilesStart)
 		if err != nil {
@@ -228,6 +268,25 @@ func setSaveOptsForLocalCheckpointFiles(o *SaveOpts, saveOpts *state.SaveOpts) e
 			RunscVersion:      o.RunscVersion,
 			Paths:             o.SplitFSCheckpointPaths,
 		}
+	}
+	for i := range o.FilestoreSnapshot {
+		t := &o.FilestoreSnapshot[i]
+		dest, err := o.ReleaseFD(t.FDIndex)
+		if err != nil {
+			return err
+		}
+		saveOpts.FilestoreSnapshots = append(saveOpts.FilestoreSnapshots, checkpoint.FilestoreSnapshot{
+			ID:   t.ResourceID,
+			Name: t.Name,
+			Dest: dest.ReleaseToFile("filestore snapshot dest"),
+		})
+	}
+	if haveFilestoreSidecar {
+		sidecar, err := o.ReleaseFD(o.FilestoreSidecarFDIndex)
+		if err != nil {
+			return err
+		}
+		saveOpts.FilestoreSidecar = sidecar.ReleaseToFile("filestore sidecar")
 	}
 	return nil
 }

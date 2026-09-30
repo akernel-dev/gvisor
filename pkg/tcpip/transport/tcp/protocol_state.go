@@ -14,18 +14,7 @@
 
 package tcp
 
-import (
-	"context"
-	"fmt"
-)
-
-// afterLoad is invoked by stateify.
-func (p *protocol) afterLoad(ctx context.Context) {
-	rng := p.stack.SecureRNG()
-	if n, err := rng.Reader.Read(p.seqnumSecret[:]); err != nil || n != len(p.seqnumSecret) {
-		panic(fmt.Sprintf("rng.Reader.Read(seqnumSecret) failed: n=%d err=%v", n, err))
-	}
-	if n, err := rng.Reader.Read(p.tsOffsetSecret[:]); err != nil || n != len(p.tsOffsetSecret) {
-		panic(fmt.Sprintf("rng.Reader.Read(tsOffsetSecret) failed: n=%d err=%v", n, err))
-	}
-}
+// TCP secrets are checkpointed with the protocol. Reseeding them on restore
+// would make fresh connections reuse old tuples with unrelated initial sequence
+// numbers and timestamps while their peer's TIME_WAIT state is still restored.
+// Such SYNs may be rejected until TIME_WAIT expires, even on loopback.

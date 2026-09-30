@@ -16,12 +16,15 @@ package tcpip
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"gvisor.dev/gvisor/pkg/state"
 )
 
 func TestLimitedWriter_Write(t *testing.T) {
@@ -344,4 +347,24 @@ func padTo4(partial string) []byte {
 		partial += "\x00"
 	}
 	return []byte(partial)
+}
+
+func TestStdClockCheckpointDoesNotAdvanceLiveClock(t *testing.T) {
+	clock := &stdClock{baseTime: time.Now().Add(-10 * time.Second)}
+	before := clock.NowMonotonic()
+	var buf bytes.Buffer
+	if _, err := state.Save(context.Background(), &buf, clock); err != nil {
+		t.Fatal(err)
+	}
+	after := clock.NowMonotonic()
+	if delta := after.Sub(before); delta < 0 || delta > time.Second {
+		t.Fatalf("checkpoint jumped live clock by %s", delta)
+	}
+	var restored stdClock
+	if _, err := state.Load(context.Background(), bytes.NewReader(buf.Bytes()), &restored); err != nil {
+		t.Fatal(err)
+	}
+	if delta := restored.NowMonotonic().Sub(before); delta < 0 || delta > time.Second {
+		t.Fatalf("restored clock differs by %s", delta)
+	}
 }

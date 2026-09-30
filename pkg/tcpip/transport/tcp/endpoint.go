@@ -592,6 +592,14 @@ type Endpoint struct {
 	// for tcp.DefaultTCPTimeWaitTimeout seconds.
 	timeWaitTimer tcpip.Timer `state:"nosave"`
 
+	// timeWaitDeadline survives restore so repeated checkpoints cannot extend
+	// a closed connection's lifetime beyond the original TIME_WAIT interval.
+	timeWaitDeadline tcpip.MonotonicTime
+
+	// timeWaitPaused prevents an already queued expiry callback from mutating
+	// endpoint registration while the stack is checkpointed.
+	timeWaitPaused bool `state:"nosave"`
+
 	// listenCtx is used by listening endpoints to store state used while listening for
 	// connections. Nil otherwise.
 	listenCtx *listenContext `state:"nosave"`

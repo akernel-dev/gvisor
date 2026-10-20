@@ -27,6 +27,42 @@ import (
 	"gvisor.dev/gvisor/runsc/specutils"
 )
 
+func TestAnonymousFilestoreParentMountNamespace(t *testing.T) {
+	dir := t.TempDir()
+	goferRoot := t.TempDir()
+	goferDir := filepath.Join(goferRoot, dir)
+	if err := os.MkdirAll(goferDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var overlay config.Overlay2
+	if err := overlay.Set("root:dir=" + dir); err != nil {
+		t.Fatal(err)
+	}
+	c := &Container{}
+	for _, parent := range []bool{false, true} {
+		f, err := c.createGoferFilestore(goferRoot, overlay,
+			specutils.GoferMountConf{Lower: specutils.NoneLower, Upper: specutils.AnonOverlay},
+			"/", "/", nil, nil, parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantDir := goferDir
+		if parent {
+			wantDir = dir
+		}
+		if filepath.Dir(f.Name()) != wantDir {
+			t.Errorf("parent=%v: backing file %q, want directory %q", parent, f.Name(), wantDir)
+		}
+		if _, err := os.Stat(f.Name()); !os.IsNotExist(err) {
+			t.Errorf("filestore must remain anonymous: stat=%v", err)
+		}
+		if _, err := f.WriteString("private writable state"); err != nil {
+			t.Error(err)
+		}
+		f.Close()
+	}
+}
+
 func TestFilestoreArtifactAdoption(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

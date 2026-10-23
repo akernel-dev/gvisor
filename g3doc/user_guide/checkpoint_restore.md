@@ -1,5 +1,7 @@
 # Checkpoint/Restore
 
+For anonymous disk-backed filestores saved with `--skip-filestore-pages` and `--filestore-snapshot-dir`, older kernels may reject FICLONE between different mount-namespace copies of the same filesystem with `EXDEV`. Start the source with `--filestore-parent-mountns=true` to open its anonymous backing files in the runsc launcher's mount namespace, matching checkpoint destinations opened there. This option is disabled by default and does not change self-backed overlays. It retains a reference to the backing mount until the sandbox exits; drain all users before unmounting that filesystem. Restore with `--filestore-adopt-dir` and clone-on-adopt keeps artifacts reusable and already opens each private clone in the launcher namespace.
+
 [TOC]
 
 gVisor has the ability to checkpoint a process, save its current state in a

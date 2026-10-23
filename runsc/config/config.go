@@ -120,6 +120,13 @@ type Config struct {
 	// mutates the artifacts in place (e.g. fd-hold fallbacks on ext4).
 	FilestoreCloneOnAdopt bool `flag:"filestore-clone-on-adopt"`
 
+	// FilestoreParentMountNS creates anonymous filestores in the runsc
+	// launcher's mount namespace. Older kernels require source and destination
+	// descriptors to reference the same mount for FICLONE, even when both mounts
+	// expose the same filesystem. This permits checkpoints outside the gofer
+	// namespace, but the backing mount remains pinned until the sandbox exits.
+	FilestoreParentMountNS bool `flag:"filestore-parent-mountns"`
+
 	// FSGoferHostUDS is deprecated: use host-uds=all.
 	FSGoferHostUDS bool `flag:"fsgofer-host-uds"`
 

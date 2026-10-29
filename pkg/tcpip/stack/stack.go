@@ -2931,3 +2931,29 @@ func (s *Stack) EnableAllNonLoopbackNICs() {
 		}
 	}
 }
+
+// ClassifyLocalIPv4Address reports whether addr has a local or broadcast
+// entry in this stack's IPv4 local address table. A nonempty interface name
+// restricts the lookup to that interface. Unlike CheckLocalAddress, this
+// checks actual assigned addresses even when spoofing is enabled. The
+// subnet's lowest address is not implicitly broadcast (Linux 5.14 and later).
+func (s *Stack) ClassifyLocalIPv4Address(addr tcpip.Address, iface string) (local, broadcast bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, nic := range s.nics {
+		if iface != "" && nic.Name() != iface {
+			continue
+		}
+		ep := nic.getAddressOrCreateTempInner(header.IPv4ProtocolNumber, addr, false, NeverPrimaryEndpoint)
+		if ep != nil {
+			subnet := ep.Subnet()
+			isBroadcast := subnet.IsBroadcast(addr)
+			ep.DecRef()
+			if !isBroadcast {
+				return true, false
+			}
+			broadcast = true
+		}
+	}
+	return false, broadcast
+}

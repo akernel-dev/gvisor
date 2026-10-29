@@ -323,6 +323,13 @@ func SetEntries(mapper IDMapper, stk *stack.Stack, optVal []byte, ipv6 bool) *sy
 		return err
 	}
 
+	for _, rule := range table.Rules {
+		for _, matcher := range rule.Matchers {
+			if a, ok := matcher.(*AddrtypeMatcher); ok {
+				a.stack = stk
+			}
+		}
+	}
 	stk.IPTables().ReplaceTable(nameToID[replace.Name.String()], table, ipv6)
 	return nil
 }
@@ -377,6 +384,11 @@ func parseMatchers(mapper IDMapper, filter stack.IPHeaderFilter, optVal []byte) 
 // it returns the most recent (lowest revision's) "unmarshalMatcher"
 // error.
 func unmarshalMatcherRevs(mapper IDMapper, match *linux.XTEntryMatch, filter stack.IPHeaderFilter, optVal []byte) (stack.Matcher, error) {
+	// Addrtype and conntrack revisions have different ABI layouts. Honor
+	// their requested revision rather than guessing from the payload size.
+	if match.Name.String() == matcherNameAddrtype || match.Name.String() == matcherNameConntrack {
+		return unmarshalMatcher(mapper, match, filter, optVal[linux.SizeOfXTEntryMatch:match.MatchSize])
+	}
 	var (
 		matcher stack.Matcher
 		err     error
@@ -616,6 +628,11 @@ func checkChainTargets(table stack.Table, ruleIdx int, hook stack.Hook, visited 
 		visited[ruleIdx] = true
 
 		rule := table.Rules[ruleIdx]
+		for _, matcher := range rule.Matchers {
+			if a, ok := matcher.(*AddrtypeMatcher); ok && !a.supportsHook(hook) {
+				return syserr.ErrInvalidArgument
+			}
+		}
 		if !targetSupportsHook(rule.Target, hook) {
 			nflog("target %T at rule %d does not support hook %v", rule.Target, ruleIdx, hook)
 			return syserr.ErrInvalidArgument
@@ -671,7 +688,7 @@ func hookFromLinux(hook int) stack.Hook {
 // MatchRevision returns a "linux.XTGetRevision" for a given
 // matcher. It sets "Revision" to the highest supported value,
 // unless the provided revision number is higher.
-func MatchRevision(t *kernel.Task, revPtr hostarch.Addr) (linux.XTGetRevision, *syserr.Error) {
+func MatchRevision(t *kernel.Task, revPtr hostarch.Addr, netProto tcpip.NetworkProtocolNumber) (linux.XTGetRevision, *syserr.Error) {
 	// Read in the matcher name and version.
 	var rev linux.XTGetRevision
 
@@ -679,6 +696,12 @@ func MatchRevision(t *kernel.Task, revPtr hostarch.Addr) (linux.XTGetRevision, *
 		return linux.XTGetRevision{}, syserr.FromError(err)
 	}
 
+	if rev.Name.String() == matcherNameAddrtype && netProto != header.IPv4ProtocolNumber {
+		return linux.XTGetRevision{}, syserr.ErrNoFileOrDir
+	}
+	if rev.Name.String() == matcherNameConntrack && rev.Revision != conntrackMatchRevision {
+		return linux.XTGetRevision{}, syserr.ErrProtocolNotSupported
+	}
 	maxSupported, ok := matchMakerRevision(rev.Name.String(), rev.Revision)
 	if !ok {
 		// Return ENOENT if there's no matcher with that name.

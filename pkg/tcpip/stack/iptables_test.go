@@ -532,3 +532,38 @@ func TestIPTablesJumpLoop(t *testing.T) {
 		t.Errorf("CheckInput with jump loop expected to drop packet, but got accept")
 	}
 }
+
+func TestHeaderFilterAbsentInterfaces(t *testing.T) {
+	for _, v6 := range []bool{false, true} {
+		pkt := genTCPPacket(genTCPOpts{})
+		filter := EmptyFilter4()
+		if v6 {
+			pkt.DecRef()
+			pkt = v6PacketBuffer()
+			filter = EmptyFilter6()
+		}
+		for _, hook := range []Hook{Prerouting, Input, Forward, Output, Postrouting} {
+			filter.InputInterface = "docker0"
+			filter.InputInterfaceInvert = false
+			if filter.match(pkt, hook, "", "docker0") {
+				t.Errorf("IPv6=%t hook=%v matched absent input interface", v6, hook)
+			}
+			filter.InputInterfaceInvert = true
+			if !filter.match(pkt, hook, "", "docker0") {
+				t.Errorf("IPv6=%t hook=%v rejected inverted absent input", v6, hook)
+			}
+			filter.InputInterface = ""
+			filter.OutputInterface = "docker0"
+			filter.OutputInterfaceInvert = false
+			if filter.match(pkt, hook, "docker0", "") {
+				t.Errorf("IPv6=%t hook=%v matched absent output interface", v6, hook)
+			}
+			filter.OutputInterfaceInvert = true
+			if !filter.match(pkt, hook, "docker0", "") {
+				t.Errorf("IPv6=%t hook=%v rejected inverted absent output", v6, hook)
+			}
+			filter.OutputInterface = ""
+		}
+		pkt.DecRef()
+	}
+}

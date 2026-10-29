@@ -315,20 +315,13 @@ func (fl IPHeaderFilter) match(pkt *PacketBuffer, hook Hook, inNicName, outNicNa
 	}
 
 	switch hook {
-	case Prerouting, Input:
-		return matchIfName(inNicName, fl.InputInterface, fl.InputInterfaceInvert)
-	case Postrouting, Output:
-		return matchIfName(outNicName, fl.OutputInterface, fl.OutputInterfaceInvert)
-	case Forward:
-		if !matchIfName(inNicName, fl.InputInterface, fl.InputInterfaceInvert) {
-			return false
-		}
-
-		if !matchIfName(outNicName, fl.OutputInterface, fl.OutputInterfaceInvert) {
-			return false
-		}
-
-		return true
+	case Prerouting, Input, Forward, Output, Postrouting:
+		// A user chain can be reached from hooks without an input or output
+		// device. Linux still compares both names, using an empty name for the
+		// absent device. Ignoring that predicate would make Docker's input-only
+		// RETURN rule also terminate locally generated OUTPUT traffic.
+		return matchIfName(inNicName, fl.InputInterface, fl.InputInterfaceInvert) &&
+			matchIfName(outNicName, fl.OutputInterface, fl.OutputInterfaceInvert)
 	default:
 		panic(fmt.Sprintf("unknown hook: %d", hook))
 	}

@@ -174,6 +174,9 @@ func testWindowScaling(t *testing.T, windowSize uint16, synScale, synAckScale ui
 		dstPort:     &responderPort,
 	})
 	synPkt.tuple = ct.getConnAndUpdate(synPkt, true /* skipChecksumValidation */)
+	if got := synPkt.ConnectionTrackingState(); got != ConnTrackStateNew {
+		t.Fatalf("SYN firewall state = %v", got)
+	}
 	if IPTHandlePacket(synPkt, Output, &rt) {
 		t.Fatal("IPTHandlePacket() shouldn't perform any NAT")
 	}
@@ -206,6 +209,9 @@ func testWindowScaling(t *testing.T, windowSize uint16, synScale, synAckScale ui
 		dstPort:     &originatorPort,
 	})
 	synAckPkt.tuple = ct.getConnAndUpdate(synAckPkt, true /* skipChecksumValidation */)
+	if got := synAckPkt.ConnectionTrackingState(); got != ConnTrackStateEstablishedReply {
+		t.Fatalf("SYN-ACK firewall state = %v", got)
+	}
 	if IPTHandlePacket(synAckPkt, Prerouting, &rt) {
 		t.Fatal("IPTHandlePacket() shouldn't perform any NAT")
 	}
@@ -237,6 +243,9 @@ func testWindowScaling(t *testing.T, windowSize uint16, synScale, synAckScale ui
 		dstPort:    &responderPort,
 	})
 	ackPkt.tuple = ct.getConnAndUpdate(ackPkt, true /* skipChecksumValidation */)
+	if got := ackPkt.ConnectionTrackingState(); got != ConnTrackStateEstablished {
+		t.Fatalf("ACK firewall state = %v", got)
+	}
 	if IPTHandlePacket(ackPkt, Output, &rt) {
 		t.Fatal("IPTHandlePacket() shouldn't perform any NAT")
 	}
@@ -408,5 +417,31 @@ func (cn *conn) checkReplySeq(t *testing.T, seq uint32) {
 
 	if got, want := cn.tcb.ReplySendSequenceNumber(), seqnum.Value(seq); got != want {
 		t.Fatalf("checkReplySeq: got %d, wanted %d", got, want)
+	}
+}
+
+// Only an ICMP error quoting an existing flow is RELATED. The same error
+// without that flow remains INVALID and must not bypass a forwarding policy.
+func TestRelatedICMPConnectionTrackingState(t *testing.T) {
+	ct := ConnTrack{clock: faketime.NewManualClock()}
+	ct.init()
+	original := genTCPPacket(genTCPOpts{})
+	defer original.DecRef()
+	original.tuple = ct.getConnAndUpdate(original, true)
+	original.tuple.conn.finalize()
+	quoted := append([]byte(nil), original.NetworkHeader().Slice()...)
+	quoted = append(quoted, original.TransportHeader().Slice()...)
+	errorPacket := NewPacketBuffer(PacketBufferOptions{ReserveHeaderBytes: header.IPv4MinimumSize + header.ICMPv4MinimumSize, Payload: buffer.MakeWithData(quoted)})
+	defer errorPacket.DecRef()
+	errorPacket.NetworkProtocolNumber = header.IPv4ProtocolNumber
+	errorPacket.TransportProtocolNumber = header.ICMPv4ProtocolNumber
+	header.ICMPv4(errorPacket.TransportHeader().Push(header.ICMPv4MinimumSize)).SetType(header.ICMPv4DstUnreachable)
+	header.IPv4(errorPacket.NetworkHeader().Push(header.IPv4MinimumSize)).Encode(&header.IPv4Fields{TotalLength: uint16(header.IPv4MinimumSize + header.ICMPv4MinimumSize + len(quoted)), Protocol: uint8(header.ICMPv4ProtocolNumber), SrcAddr: testutil.MustParse4("1.0.0.2"), DstAddr: testutil.MustParse4("1.0.0.1")})
+	if got := errorPacket.ConnectionTrackingState(); got != ConnTrackStateInvalid {
+		t.Fatalf("unassociated ICMP = %v", got)
+	}
+	errorPacket.tuple = ct.getConnAndUpdate(errorPacket, true)
+	if got := errorPacket.ConnectionTrackingState(); got != ConnTrackStateRelated {
+		t.Fatalf("associated ICMP = %v", got)
 	}
 }

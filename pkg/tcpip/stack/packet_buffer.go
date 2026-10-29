@@ -1160,3 +1160,37 @@ func (pk *PacketBuffer) CalculateTransportChecksum() {
 		t.SetChecksum(csum)
 	}
 }
+
+// ConnectionTrackingState returns the packet's firewall connection state.
+// ESTABLISHED means a reply has been seen, not that TCP's three-way handshake
+// has completed: the first SYN-ACK must already pass an ESTABLISHED rule.
+func (pk *PacketBuffer) ConnectionTrackingState() ConnTrackState {
+	if !pk.IsConnTrackConfigured() {
+		return ConnTrackStateInvalid
+	}
+	// Only errors whose embedded flow was found have a conntrack tuple.
+	switch pk.TransportProtocolNumber {
+	case header.ICMPv4ProtocolNumber:
+		if h := pk.TransportHeader().Slice(); len(h) >= header.ICMPv4MinimumSize {
+			switch header.ICMPv4(h).Type() {
+			case header.ICMPv4DstUnreachable, header.ICMPv4TimeExceeded, header.ICMPv4ParamProblem:
+				return ConnTrackStateRelated
+			}
+		}
+	case header.ICMPv6ProtocolNumber:
+		if h := pk.TransportHeader().Slice(); len(h) >= header.ICMPv6MinimumSize && h[0] < 128 {
+			return ConnTrackStateRelated
+		}
+	}
+	if pk.tuple.reply {
+		return ConnTrackStateEstablishedReply
+	}
+	cn := pk.tuple.conn
+	cn.stateMu.RLock()
+	replySeen := cn.replySeen
+	cn.stateMu.RUnlock()
+	if replySeen {
+		return ConnTrackStateEstablished
+	}
+	return ConnTrackStateNew
+}

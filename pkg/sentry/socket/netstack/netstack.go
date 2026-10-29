@@ -1606,7 +1606,7 @@ func (s *sock) getSockOptIPv6(t *kernel.Task, ep commonEndpoint, name int, outPt
 		}
 
 		// Get the highest support matcher revision.
-		ret, err := netfilter.MatchRevision(t, outPtr)
+		ret, err := netfilter.MatchRevision(t, outPtr, header.IPv6ProtocolNumber)
 		if err != nil {
 			return nil, err
 		}
@@ -1843,7 +1843,7 @@ func (s *sock) getSockOptIP(t *kernel.Task, ep commonEndpoint, name int, outPtr 
 		}
 
 		// Get the highest support matcher revision.
-		ret, err := netfilter.MatchRevision(t, outPtr)
+		ret, err := netfilter.MatchRevision(t, outPtr, header.IPv4ProtocolNumber)
 		if err != nil {
 			return nil, err
 		}

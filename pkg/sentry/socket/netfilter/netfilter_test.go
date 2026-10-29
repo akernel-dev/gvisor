@@ -730,3 +730,36 @@ func TestSetEntriesLoopOrder(t *testing.T) {
 		})
 	}
 }
+
+// iptables reads the whole table before replacing it. Losing the input
+// inversion bit turns Docker's ! -i bridge DNAT rule into -i bridge after
+// an unrelated rule insertion.
+func TestInputInterfaceInversionRoundTrip(t *testing.T) {
+	for _, v6 := range []bool{false, true} {
+		filter := emptyIPv4Filter
+		if v6 {
+			filter = emptyIPv6Filter
+		}
+		filter.InputInterface = "bridge0"
+		filter.InputInterfaceMask = string([]byte{255, 255, 255, 255, 255, 255, 255, 255})
+		filter.InputInterfaceInvert = true
+		accept := &acceptTarget{AcceptTarget: stack.AcceptTarget{NetworkProtocol: filter.NetworkProtocol()}}
+		rule := stack.Rule{Filter: filter, Target: accept}
+		table := stack.Table{Rules: []stack.Rule{rule}}
+		var name linux.TableName
+		copy(name[:], filterTable)
+		if v6 {
+			entries, _ := getEntries6(table, name)
+			got, err := filterFromIP6TIP(entries.Entrytable[0].Entry.IPv6)
+			if err != nil || !got.InputInterfaceInvert {
+				t.Fatalf("IPv6 inversion lost: %+v, %v", got, err)
+			}
+		} else {
+			entries, _ := getEntries4(table, name)
+			got, err := filterFromIPTIP(entries.Entrytable[0].Entry.IP)
+			if err != nil || !got.InputInterfaceInvert {
+				t.Fatalf("IPv4 inversion lost: %+v, %v", got, err)
+			}
+		}
+	}
+}

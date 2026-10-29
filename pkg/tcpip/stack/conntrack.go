@@ -54,6 +54,8 @@ const (
 	ConnTrackStateInvalid ConnTrackState = -1
 	// ConnTrackStateEstablished represents an established connection.
 	ConnTrackStateEstablished ConnTrackState = 0
+	// ConnTrackStateRelated represents an ICMP error associated with a connection.
+	ConnTrackStateRelated ConnTrackState = 1
 	// ConnTrackStateNew represents a new connection.
 	ConnTrackStateNew ConnTrackState = 2
 	// ConnTrackStateEstablishedReply represents an established connection

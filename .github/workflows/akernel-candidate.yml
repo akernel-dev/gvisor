@@ -17,9 +17,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  SOURCE_COMMIT: e0f1d13d0be3fd73d3038d1dc2fb9d13ec137861
+
 jobs:
   build:
-    if: github.ref_name == 'develop'
+    if: github.ref_name == 'build/akernel-august-6-20261102'
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +38,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v5
       with:
+        ref: ${{ env.SOURCE_COMMIT }}
         fetch-depth: 0
 
     - name: Validate candidate
@@ -51,7 +55,7 @@ jobs:
         upstream_tag="${RELEASE_TAG%-akernel.*}"
         git fetch --force --no-tags https://github.com/google/gvisor.git \
           "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
-        git merge-base --is-ancestor "${upstream_tag}" "${GITHUB_SHA}"
+        git merge-base --is-ancestor "${upstream_tag}" "${SOURCE_COMMIT}"
 
         if git ls-remote --exit-code --tags origin \
           "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
@@ -78,7 +82,7 @@ jobs:
         bash tools/akernel-release-archive.sh build "${ARCH}" "${RUNNER_TEMP}/gvisor-candidate"
         python3 tools/akernel-candidate-manifest.py create-arch \
           "${ARCH}" "${RUNNER_TEMP}/gvisor-candidate/gvisor-${ARCH}.tar.bz2" \
-          "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${RELEASE_TAG}" \
+          "${GITHUB_REPOSITORY}" "${SOURCE_COMMIT}" "${RELEASE_TAG}" \
           "${GITHUB_RUN_ID}" \
           "${RUNNER_TEMP}/gvisor-candidate/candidate-${ARCH}.json"
 
@@ -104,6 +108,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v5
       with:
+        ref: ${{ env.SOURCE_COMMIT }}
         fetch-depth: 0
         persist-credentials: false
 
@@ -127,9 +132,9 @@ jobs:
         upstream_tag="${RELEASE_TAG%-akernel.*}"
         git fetch --force --no-tags https://github.com/google/gvisor.git \
           "refs/tags/${upstream_tag}:refs/tags/${upstream_tag}"
-        git merge-base --is-ancestor "${upstream_tag}" "${GITHUB_SHA}"
+        git merge-base --is-ancestor "${upstream_tag}" "${SOURCE_COMMIT}"
         python3 tools/akernel-candidate-manifest.py assemble \
-          "${candidate_dir}" "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" \
+          "${candidate_dir}" "${GITHUB_REPOSITORY}" "${SOURCE_COMMIT}" \
           "${GITHUB_RUN_ID}" "${RUNNER_TEMP}/manifest.json"
         test "$(jq -r '.release_tag' "${RUNNER_TEMP}/manifest.json")" = \
           "${RELEASE_TAG}"
@@ -142,7 +147,7 @@ jobs:
           echo
           echo "- Run ID: ${GITHUB_RUN_ID}"
           echo "- Planned release: ${RELEASE_TAG}"
-          echo "- Commit: ${GITHUB_SHA}"
+          echo "- Commit: ${SOURCE_COMMIT}"
           echo "- amd64 SHA-512: $(jq -r '.archives.amd64.sha512' "${RUNNER_TEMP}/manifest.json")"
           echo "- arm64 SHA-512: $(jq -r '.archives.arm64.sha512' "${RUNNER_TEMP}/manifest.json")"
           echo "- Artifacts: gvisor-candidate-${GITHUB_RUN_ID}-{amd64,arm64}"

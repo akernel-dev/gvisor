@@ -30,7 +30,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"gvisor.dev/gvisor/pkg/control/server"
-	"gvisor.dev/gvisor/runsc/boot/sentryapi"
+	"gvisor.dev/gvisor/runsc/boot"
 	"gvisor.dev/gvisor/runsc/config"
 	"gvisor.dev/gvisor/runsc/container"
 	"gvisor.dev/gvisor/runsc/flag"
@@ -272,7 +272,7 @@ func startFakeSandbox(t *testing.T, rootDir string, reusedPID bool) (string, <-c
 			ID:                id,
 			PidIdentity:       identity,
 			ControlSocketPath: filepath.Join(rootDir, "control.sock"),
-			MountHints:        &sentryapi.PodMountHints{},
+			MountHints:        &boot.PodMountHints{},
 		},
 	}
 	c.Sandbox.Pid.Store(proc.Process.Pid)

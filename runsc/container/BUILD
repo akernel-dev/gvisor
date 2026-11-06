@@ -171,3 +171,11 @@ go_test(
         "@org_golang_x_sys//unix:go_default_library",
     ],
 )
+
+# Exercise upstream atomic publication while the writer owns the lifecycle lock.
+go_test(
+    name = "state_file_inventory_test",
+    size = "small",
+    srcs = ["state_file_inventory_test.go"],
+    embed = [":container"],
+)

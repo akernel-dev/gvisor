@@ -41,7 +41,7 @@ jobs:
         set -euo pipefail
         export DEBIAN_FRONTEND=noninteractive
         sudo -E apt-get update
-        sudo -E apt-get install -y binutils bzip2 make
+        sudo -E apt-get install -y binutils bzip2 make busybox-static libfuse2t64 python3-venv
 
     - name: Build and verify release archive
       shell: bash
@@ -58,4 +58,50 @@ jobs:
       run: |
         set -euo pipefail
         make test OPTIONS="-c opt --test_timeout=600" \
-          TARGETS="//runsc/config:config_test //runsc/boot:boot_test //runsc/container:filestore_snapshot_test"
+          TARGETS="//runsc/config:config_test //runsc/boot:boot_test //runsc/container:filestore_snapshot_test //runsc/container:state_file_inventory_test //runsc/specutils:specutils_test //runsc/container:serialization_test"
+        # The canonical build container has no sudo. Build there, then use the
+        # existing make sudo wrapper to execute the test on the privileged host.
+        make sudo BAZEL_OPTIONS="${BAZEL_OPTIONS} -c opt" TARGETS="//runsc/cmd:cmd_test" \
+          ARGS='-test.v -test.timeout=600s -test.run="Test(List|StateBooting|DeleteBooting|KillBooting|ReadOnly|DeleteReused)"'
+
+    - name: Real slow-restore inventory acceptance
+      shell: bash
+      env:
+        ARCH: ${{ matrix.arch }}
+      run: |
+        set -euo pipefail
+        python3 -m venv "${RUNNER_TEMP}/inventory-venv"
+        "${RUNNER_TEMP}/inventory-venv/bin/pip" install fusepy==3.0.1
+        mkdir -p "${RUNNER_TEMP}/inventory-bundle"
+        tar -xjf "${RUNNER_TEMP}/gvisor-pr/gvisor-${ARCH}.tar.bz2" -C "${RUNNER_TEMP}/inventory-bundle"
+        sudo modprobe fuse
+        sudo timeout -k 10s 360s unshare --mount --pid --fork --mount-proc \
+          "${RUNNER_TEMP}/inventory-venv/bin/python" tools/runsc-list-restore-test.py \
+          --runsc "${RUNNER_TEMP}/inventory-bundle/runsc" --platform systrap \
+          --parallel-restores 4 --list-timeout 7 --output "${RUNNER_TEMP}/inventory-evidence"
+
+    - name: Upload inventory acceptance evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: inventory-acceptance-${{ matrix.arch }}
+        path: ${{ runner.temp }}/inventory-evidence
+        if-no-files-found: ignore
+
+    - name: Race-test upstream metadata concurrency
+      if: matrix.arch == 'amd64'
+      shell: bash
+      env:
+        BAZEL_OPTIONS: --config=x86_64 --config=race
+      run: |
+        set -euo pipefail
+        make test OPTIONS="-c opt --test_timeout=600 --runs_per_test=3" \
+          TARGETS="//runsc/container:state_file_inventory_test //runsc/specutils:specutils_test"
+
+    - name: Upload inventory race test logs
+      if: always() && matrix.arch == 'amd64'
+      uses: actions/upload-artifact@v4
+      with:
+        name: inventory-race-logs-amd64
+        path: bazel-testlogs/runsc/**/test.log
+        if-no-files-found: warn

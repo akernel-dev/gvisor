@@ -117,9 +117,7 @@ type servedSandbox struct {
 }
 
 // load loads the sandbox being monitored and initializes its metric verifier.
-// An error matching container.ErrStateFileLocked indicates temporary state-file
-// contention; callers should retry without discarding the sandbox.
-// Other errors mean the sandbox should be removed from this metrics server.
+// Errors mean the sandbox should be removed from this metrics server.
 //
 // +checklocksexclude:s.mu
 func (s *servedSandbox) load() (*sandbox.Sandbox, *prometheus.Verifier, error) {
@@ -127,7 +125,7 @@ func (s *servedSandbox) load() (*sandbox.Sandbox, *prometheus.Verifier, error) {
 	defer s.mu.Unlock()
 	if s.sandbox == nil {
 		allContainers, err := container.LoadSandbox(s.server.rootDir, s.rootContainerID.SandboxID, container.LoadOpts{
-			TryLock: container.TryAcquire,
+			ReadOnly: true,
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("cannot load sandbox %q: %w", s.rootContainerID.SandboxID, err)
@@ -419,10 +417,6 @@ func (m *metricServer) refreshSandboxesLocked() {
 		}
 		sand, _, err := sandbox.load()
 		if err != nil {
-			if errors.Is(err, container.ErrStateFileLocked) {
-				// Keep the unloaded entry for a later scan.
-				continue
-			}
 			log.Warningf("Sandbox %s cannot be loaded, deleting it: %v", sandboxID, err)
 			sandbox.cleanup()
 			delete(m.sandboxes, sandboxID)
@@ -476,13 +470,12 @@ func (m *metricServer) refreshSandboxesLocked() {
 		cont, err := container.Load(m.rootDir, sid, container.LoadOpts{
 			Exact:         true,
 			SkipCheck:     true,
-			TryLock:       container.TryAcquire,
+			ReadOnly:      true,
 			RootContainer: true,
 		})
 		if err != nil {
-			if errors.Is(err, container.ErrStateFileLocked) {
-				// This error is OK and shouldn't generate log spam. The sandbox is probably in the middle
-				// of being created.
+			if errors.Is(err, os.ErrNotExist) {
+				// The sandbox was deleted since it was listed.
 				continue
 			}
 			log.Warningf("Cannot load state file for sandbox %q: %v", sid, err)
@@ -516,9 +509,8 @@ func (m *metricServer) refreshSandboxesLocked() {
 				prometheus.SandboxIDLabel: sid.SandboxID,
 			},
 		}
-		// Try to load all containers now. A locked state file is temporary; keep
-		// the unloaded entry for a later scan without negative-caching its state.
-		if _, _, err := served.load(); err != nil && !errors.Is(err, container.ErrStateFileLocked) {
+		// Try to load all containers now.
+		if _, _, err := served.load(); err != nil {
 			log.Warningf("Sandbox %q cannot be loaded, ignoring it: %v", sid, err)
 			m.lastStateFileStat[sid] = stat
 			served.cleanup()

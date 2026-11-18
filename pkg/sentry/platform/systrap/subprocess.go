@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -95,10 +96,41 @@ type thread struct {
 	logPrefix atomic.Pointer[string]
 }
 
-// requestThread is used to request a new sysmsg thread. A thread identifier will
-// be sent into the thread channel.
+// requestThread is used to request a new sysmsg thread.
 type requestThread struct {
-	thread chan *thread
+	result chan threadResult
+}
+
+type threadResult struct {
+	thread *thread
+	err    error
+}
+
+// errSysmsgCloneEAGAIN marks a clone failure logged by the ptrace request
+// handler. Errors from later steps still need a warning at the caller.
+var errSysmsgCloneEAGAIN = fmt.Errorf("createSysmsgThread: failed to get clone: %w", unix.EAGAIN)
+
+const sysmsgCloneFailureLogInterval = time.Minute
+
+// sysmsgCloneFailureLog counts clone EAGAINs across subprocesses in this Sentry.
+var sysmsgCloneFailureLog cloneFailureLog
+
+type cloneFailureLog struct {
+	mu         sync.Mutex
+	count      uint64
+	lastReport time.Time
+}
+
+// record returns the cumulative count when a report is due, or zero otherwise.
+func (l *cloneFailureLog) record(now time.Time) uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.count++
+	if l.count > 1 && now.Sub(l.lastReport) < sysmsgCloneFailureLogInterval {
+		return 0
+	}
+	l.lastReport = now
+	return l.count
 }
 
 // requestStub is used to request a new stub process.
@@ -234,7 +266,7 @@ func (s *subprocess) initSyscallThread(ptraceThread *thread, seccompNotify bool)
 func handlePtraceSyscallRequestError(req any, format string, values ...any) {
 	switch req := req.(type) {
 	case requestThread:
-		req.thread <- nil
+		req.result <- threadResult{}
 	case requestStub:
 		req.done <- nil
 	}
@@ -261,6 +293,17 @@ func (s *subprocess) handlePtraceSyscallRequest(req any) {
 	case requestThread:
 		t, err := ptraceThread.clone()
 		if err != nil {
+			if errors.Is(err, unix.EAGAIN) {
+				r.result <- threadResult{err: errSysmsgCloneEAGAIN}
+				switch count := sysmsgCloneFailureLog.record(time.Now()); count {
+				case 0:
+				case 1:
+					log.BugTracebackf("handlePtraceSyscallRequest failed: error initializing thread: %v (clone EAGAIN failures: %d)", err, count)
+				default:
+					log.Warningf("Unable to create a new stub thread: %v (clone EAGAIN failures: %d total)", err, count)
+				}
+				return
+			}
 			handlePtraceSyscallRequestError(req, "error initializing thread: %v", err)
 			return
 		}
@@ -326,7 +369,7 @@ func (s *subprocess) handlePtraceSyscallRequest(req any) {
 		t.detach()
 
 		// Return the thread.
-		r.thread <- t
+		r.result <- threadResult{thread: t}
 	case requestStub:
 		t, err := ptraceThread.createStub()
 		if err != nil {
@@ -1035,7 +1078,9 @@ func (s *subprocess) kickSysmsgThread() bool {
 		s.numSysmsgThreads++
 		s.kickSysmsgMu.Unlock()
 		if err := s.createSysmsgThread(); err != nil {
-			log.Warningf("Unable to create a new stub thread: %s", err)
+			if err != errSysmsgCloneEAGAIN {
+				log.Warningf("Unable to create a new stub thread: %s", err)
+			}
 			s.kickSysmsgMu.Lock()
 			s.numSysmsgThreads--
 			s.kickSysmsgMu.Unlock()
@@ -1130,10 +1175,13 @@ func (s *subprocess) createSysmsgThread() error {
 // +checklocksread:s.aliveMu
 func (s *subprocess) createSysmsgThreadLocked() error {
 	// Create a new seccomp process.
-	var r requestThread
-	r.thread = make(chan *thread)
+	r := requestThread{result: make(chan threadResult)}
 	s.requests <- r
-	p := <-r.thread
+	result := <-r.result
+	if result.err != nil {
+		return result.err
+	}
+	p := result.thread
 	if p == nil {
 		return fmt.Errorf("createSysmsgThread: failed to get clone")
 	}

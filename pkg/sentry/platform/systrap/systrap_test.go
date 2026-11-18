@@ -18,6 +18,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 	pkgcontext "gvisor.dev/gvisor/pkg/context"
@@ -37,6 +38,29 @@ import (
 func TestMain(m *testing.M) {
 	cpuid.Initialize()
 	os.Exit(m.Run())
+}
+
+func TestCloneEAGAINFailureLog(t *testing.T) {
+	var failures cloneFailureLog
+	start := time.Now()
+	if got := failures.record(start); got != 1 {
+		t.Fatalf("first failure report = %d, want 1", got)
+	}
+	for i := 0; i < 1000; i++ {
+		if got := failures.record(start.Add(59 * time.Second)); got != 0 {
+			t.Fatalf("failure %d reported before the interval: %d", i+2, got)
+		}
+	}
+	next := start.Add(time.Minute)
+	if got := failures.record(next); got != 1002 {
+		t.Fatalf("first summary = %d, want 1002", got)
+	}
+	if got := failures.record(next); got != 0 {
+		t.Fatalf("failure at the same timestamp reported twice: %d", got)
+	}
+	if got := failures.record(next.Add(time.Minute)); got != 1004 {
+		t.Fatalf("second summary = %d, want 1004", got)
+	}
 }
 
 // testMemoryManager implements the parts of platform.MemoryManager that
